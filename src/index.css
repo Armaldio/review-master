@@ -1,0 +1,16 @@
+/* Global reset and layout */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  background-color: #1e1e1e;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden; /* Prevent body scroll, use app-level scrolling */
+}
+
+#app {
+  height: 100%;
+  width: 100%;
+}
