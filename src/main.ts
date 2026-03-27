@@ -83,6 +83,64 @@ app.on('ready', () => {
     }
   });
 
+  // --- Keyring IPC Handlers ---
+  const SERVICE_NAME = 'review-master';
+  const { setPassword, getPassword, deletePassword } = require('@napi-rs/keyring');
+
+  ipcMain.handle('set-secret', async (event, account: string, value: string) => {
+    try {
+      await setPassword(SERVICE_NAME, account, value);
+      return { success: true };
+    } catch (error: any) {
+      console.error(`[Keyring] Failed to set secret for ${account}:`, error);
+      // Check for common ServiceUnknown error
+      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
+        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
+      }
+      return { success: false, error: 'ERR_KEYRING_FAILED', message: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle('get-secret', async (event, account: string) => {
+    try {
+      const password = await getPassword(SERVICE_NAME, account);
+      return { success: true, value: password };
+    } catch (error: any) {
+      // If service is missing
+      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
+        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
+      }
+      // Keyring often throws if not found, we treat it as successfully returning null
+      return { success: true, value: null };
+    }
+  });
+
+  ipcMain.handle('delete-secret', async (event, account: string) => {
+    try {
+      await deletePassword(SERVICE_NAME, account);
+      return { success: true };
+    } catch (error: any) {
+      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
+        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
+      }
+      return { success: false, error: 'ERR_KEYRING_FAILED', message: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle('check-keyring', async () => {
+    try {
+      // Try to get a dummy value to trigger a check
+      await getPassword(SERVICE_NAME, 'check-health');
+      return { success: true };
+    } catch (error: any) {
+      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
+        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
+      }
+      // If it's just "not found", the service IS alive
+      return { success: true };
+    }
+  });
+
   createWindow();
 });
 

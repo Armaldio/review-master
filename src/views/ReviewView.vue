@@ -8,6 +8,8 @@ import FileTreeItem from "../components/FileTreeItem.vue";
 import type { FileNode } from "../components/FileTreeItem.vue";
 import { parsePatchFiles } from "@pierre/diffs";
 import ignore from "ignore";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 const router = useRouter();
 const store = useReviewStore();
@@ -21,7 +23,11 @@ const useTreeView = ref(true);
 const isSubmitting = ref(false);
 
 // Inline comment state
-const inlineCommentLine = ref<{ lineNumber: number; side: AnnotationSide } | null>(null);
+const inlineCommentLocation = ref<{ 
+  lineNumber: number; 
+  side: AnnotationSide;
+  range?: SelectedLineRange;
+} | null>(null);
 
 // Track annotation version to force re-renders
 const annotationVersion = ref(0);
@@ -63,7 +69,18 @@ const displayedFiles = computed(() => {
 });
 
 const fileTree = computed(() => {
-  const root: FileNode = { name: 'root', path: '', isDir: true, children: {} };
+  const root: FileNode = { name: 'root', path: '', isDir: true, children: {}, commentCount: 0 };
+  
+  // 1. Map each file to its comment counts
+  const countsByFile: Record<string, number> = {};
+  for (const c of store.remoteComments) {
+    countsByFile[c.new_path] = (countsByFile[c.new_path] || 0) + 1;
+  }
+  for (const c of store.batchedComments) {
+    countsByFile[c.new_path] = (countsByFile[c.new_path] || 0) + 1;
+  }
+
+  // 2. Build the tree structure
   for (const filePath of displayedFiles.value) {
     const parts = filePath.split('/');
     let current = root;
@@ -79,11 +96,32 @@ const fileTree = computed(() => {
                 path: currentPath,
                 isDir: i < parts.length - 1,
                 children: i < parts.length - 1 ? {} : undefined,
+                commentCount: 0
             };
         }
         current = current.children![part];
+        if (i === parts.length - 1) {
+            current.commentCount = countsByFile[filePath] || 0;
+        }
     }
   }
+
+  // 3. Roll up counts for directories
+  const rollout = (node: FileNode): number => {
+    if (!node.isDir) return node.commentCount || 0;
+    
+    let total = 0;
+    if (node.children) {
+        for (const childName in node.children) {
+            total += rollout(node.children[childName]);
+        }
+    }
+    node.commentCount = total;
+    return total;
+  };
+
+  rollout(root);
+
   return root;
 });
 
@@ -123,9 +161,95 @@ const parsedFileDiff = computed(() => {
   }
 });
 
+const TRASH_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 6h18"></path>
+  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+  <line x1="10" y1="11" x2="10" y2="17"></line>
+  <line x1="14" y1="11" x2="14" y2="17"></line>
+</svg>
+`;
+
 const selectFile = (path: string) => {
   store.selectFile(path);
-  inlineCommentLine.value = null;
+  inlineCommentLocation.value = null;
+};
+
+// --- Emoji Support ---
+
+const COMMON_EMOJIS = [
+    { char: '👍', github: 'plus_one', gitlab: 'thumbsup' },
+    { char: '👎', github: 'minus_one', gitlab: 'thumbsdown' },
+    { char: '😄', github: 'laugh', gitlab: 'smile' },
+    { char: '🎉', github: 'hooray', gitlab: 'tada' },
+    { char: '❤️', github: 'heart', gitlab: 'heart' },
+    { char: '🚀', github: 'rocket', gitlab: 'rocket' },
+    { char: '👀', github: 'eyes', gitlab: 'eyes' },
+    { char: '😕', github: 'confused', gitlab: 'confused' },
+];
+
+const createEmojiPicker = (onSelect: (emoji: string) => void): HTMLElement => {
+    const container = document.createElement('div');
+    container.className = 'emoji-picker-container';
+
+    const btn = document.createElement('button');
+    btn.className = 'emoji-picker-btn';
+    btn.textContent = '😀';
+    btn.type = 'button';
+    container.appendChild(btn);
+
+    const popup = document.createElement('div');
+    popup.className = 'emoji-popup';
+    popup.style.display = 'none';
+
+    COMMON_EMOJIS.forEach(emoji => {
+        const item = document.createElement('button');
+        item.className = 'emoji-item';
+        item.textContent = emoji.char;
+        item.type = 'button';
+        item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            onSelect(emoji.char);
+            popup.style.display = 'none';
+        });
+        popup.appendChild(item);
+    });
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        popup.style.display = popup.style.display === 'none' ? 'grid' : 'none';
+    });
+
+    document.addEventListener('click', () => {
+        popup.style.display = 'none';
+    });
+
+    container.appendChild(popup);
+    return container;
+};
+
+const addReaction = async (comment: any, emojiChar: string) => {
+    if (!store.activeProvider) return;
+    const emoji = COMMON_EMOJIS.find(e => e.char === emojiChar);
+    if (!emoji) return;
+
+    try {
+        const platformEmoji = store.platform === 'github' ? emoji.github : emoji.gitlab;
+        await store.activeProvider.addReaction(comment.id, platformEmoji);
+
+        // Optimistically update UI
+        if (!comment.reactions) comment.reactions = [];
+        const existing = comment.reactions.find((r: any) => r.name === emojiChar);
+        if (existing) {
+            existing.count++;
+        } else {
+            comment.reactions.push({ name: emojiChar, count: 1 });
+        }
+        annotationVersion.value++;
+    } catch (err) {
+        alert(`Reaction error: ${(err as Error).message}`);
+    }
 };
 
 const markAsViewed = () => {
@@ -142,77 +266,41 @@ const markAsViewed = () => {
 
 // --- Inline comment helpers ---
 
-const createCommentData = (body: string, lineNumber: number) => {
+const createCommentData = (body: string, lineNumber: number, range?: any) => {
   const f = store.diffs.find((d) => d.new_path === store.selectedFile);
   if (!f) return null;
 
-  const base: any = {
+  return {
     id: Date.now().toString(),
     body,
     new_path: f.new_path,
     old_path: f.old_path,
     new_line: lineNumber,
+    range: range // Store for local display
   };
-
-  if (store.platform === 'gitlab') {
-    base.base_sha = store.mrData.latestVersion.base_commit_sha;
-    base.head_sha = store.mrData.latestVersion.head_commit_sha;
-    base.start_sha = store.mrData.latestVersion.start_commit_sha;
-  } else {
-    base.commit_id = store.mrData.headSha;
-  }
-
-  return base;
 };
 
 const postComment = async (commentData: any) => {
-  if (store.platform === 'gitlab') {
-    const pat = localStorage.getItem("gitlab_pat");
-    const formData = new FormData();
-    formData.append("position[position_type]", "text");
-    formData.append("position[base_sha]", commentData.base_sha);
-    formData.append("position[head_sha]", commentData.head_sha);
-    formData.append("position[start_sha]", commentData.start_sha);
-    formData.append("position[new_path]", commentData.new_path);
-    formData.append("position[old_path]", commentData.old_path);
-    formData.append("position[new_line]", commentData.new_line.toString());
-    formData.append("body", commentData.body);
+  if (!store.activeProvider) return;
+  return await store.activeProvider.postComment(commentData);
+};
 
-    const res = await fetch(
-      `${store.mrData.host}/api/v4/projects/${store.mrData.encodedProjectPath}/merge_requests/${store.mrData.mrIid}/discussions`,
-      {
-        method: "POST",
-        headers: { "PRIVATE-TOKEN": pat! },
-        body: formData,
-      },
-    );
-    if (!res.ok) throw new Error("Failed to post comment");
-  } else {
-    const pat = localStorage.getItem("github_pat");
-    const { owner, repo, prNumber } = store.mrData;
+const postReply = async (threadComment: any, body: string) => {
+  if (!store.activeProvider) return;
+  return await store.activeProvider.postReply(threadComment, body);
+};
 
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${pat}`,
-          "Accept": "application/vnd.github.v3+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          body: commentData.body,
-          commit_id: commentData.commit_id,
-          path: commentData.new_path,
-          line: commentData.new_line,
-          side: "RIGHT",
-        }),
-      },
-    );
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw new Error(errBody.message || "Failed to post comment");
-    }
+const deleteRemoteComment = async (comment: any) => {
+  if (!store.activeProvider) return;
+  const confirmed = confirm("Are you sure you want to delete this comment? This action cannot be undone.");
+  if (!confirmed) return;
+
+  try {
+    await store.activeProvider.deleteComment(comment.id);
+    store.removeRemoteComment(comment.id);
+    annotationVersion.value++;
+  } catch (err) {
+    alert(`Error: ${(err as Error).message}`);
   }
 };
 
@@ -229,6 +317,7 @@ const sendBatchComments = async () => {
       store.remoteComments.push({
         ...comment,
         author: store.currentUser?.username || store.currentUser?.name || 'You',
+        avatar_url: store.currentUser?.avatar_url, // Ensure avatar is shown immediately
         created_at: new Date().toISOString(),
       });
     }
@@ -256,19 +345,35 @@ const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HT
   const actions = document.createElement('div');
   actions.className = 'inline-comment-actions';
 
+  const picker = createEmojiPicker((emoji) => {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+    textarea.value = text.substring(0, start) + emoji + text.substring(end);
+    textarea.focus();
+    textarea.selectionStart = textarea.selectionEnd = start + emoji.length;
+  });
+  actions.appendChild(picker);
+
+  const rightActions = document.createElement('div');
+  rightActions.style.display = 'flex';
+  rightActions.style.gap = '8px';
+  actions.appendChild(rightActions);
+
   const batchBtn = document.createElement('button');
   batchBtn.className = 'inline-btn inline-btn-secondary';
   batchBtn.textContent = 'Add to Batch';
   batchBtn.addEventListener('click', () => {
     const body = textarea.value.trim();
     if (!body) return;
-    const data = createCommentData(body, lineNumber);
+    const data = createCommentData(body, lineNumber, inlineCommentLocation.value?.range);
     if (data) {
       store.addBatchedComment(data);
-      inlineCommentLine.value = null;
+      inlineCommentLocation.value = null;
       annotationVersion.value++;
     }
   });
+  rightActions.appendChild(batchBtn);
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'inline-btn inline-btn-primary';
@@ -276,7 +381,7 @@ const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HT
   sendBtn.addEventListener('click', async () => {
     const body = textarea.value.trim();
     if (!body) return;
-    const data = createCommentData(body, lineNumber);
+    const data = createCommentData(body, lineNumber, inlineCommentLocation.value?.range);
     if (data) {
       sendBtn.disabled = true;
       sendBtn.textContent = 'Sending...';
@@ -286,9 +391,10 @@ const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HT
         store.remoteComments.push({
           ...data,
           author: store.currentUser?.username || store.currentUser?.name || 'You',
+          avatar_url: store.currentUser?.avatar_url, // Ensure avatar is shown immediately
           created_at: new Date().toISOString(),
         });
-        inlineCommentLine.value = null;
+        inlineCommentLocation.value = null;
         annotationVersion.value++;
       } catch (err) {
         alert(`Error: ${(err as Error).message}`);
@@ -297,18 +403,17 @@ const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HT
       }
     }
   });
+  rightActions.appendChild(sendBtn);
 
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'inline-btn inline-btn-cancel';
   cancelBtn.textContent = 'Cancel';
   cancelBtn.addEventListener('click', () => {
-    inlineCommentLine.value = null;
+    inlineCommentLocation.value = null;
     annotationVersion.value++;
   });
+  rightActions.appendChild(cancelBtn);
 
-  actions.appendChild(cancelBtn);
-  actions.appendChild(batchBtn);
-  actions.appendChild(sendBtn);
   wrapper.appendChild(actions);
 
   // Auto-focus the textarea after it's in the DOM
@@ -357,11 +462,24 @@ const createRemoteCommentElement = (comment: any): HTMLElement => {
 };
 
 // --- Diff options with gutter utility ---
-
 const diffOptions = computed(() => ({
   diffStyle: viewMode.value ?? 'split',
   overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
   enableGutterUtility: true,
+  enableLineSelection: true,
+  onLineSelectionEnd: (range: SelectedLineRange | null) => {
+    if (range) {
+      inlineCommentLocation.value = {
+        lineNumber: range.end,
+        side: (range.endSide as AnnotationSide) || 'additions',
+        range,
+      };
+      annotationVersion.value++;
+    } else {
+      inlineCommentLocation.value = null;
+      annotationVersion.value++;
+    }
+  },
   renderGutterUtility: (getHoveredRow: () => { lineNumber: number; side: AnnotationSide } | undefined) => {
     const btn = document.createElement('button');
     btn.className = 'gutter-plus-btn';
@@ -370,7 +488,7 @@ const diffOptions = computed(() => ({
     btn.addEventListener('click', () => {
       const hovered = getHoveredRow();
       if (hovered) {
-        inlineCommentLine.value = {
+        inlineCommentLocation.value = {
           lineNumber: hovered.lineNumber,
           side: hovered.side ?? 'additions',
         };
@@ -385,15 +503,170 @@ const diffOptions = computed(() => ({
     if (meta.type === 'editor') {
       return createInlineEditorElement(annotation.lineNumber, annotation.side);
     }
-    if (meta.type === 'comment') {
-      return createCommentBubbleElement(meta.comment);
-    }
-    if (meta.type === 'remote') {
-      return createRemoteCommentElement(meta.comment);
+    if (meta.type === 'thread') {
+      return createThreadElement(meta.comments);
     }
     return undefined;
   },
 }));
+
+const createThreadElement = (comments: any[]): HTMLElement => {
+  const container = document.createElement('div');
+  container.className = 'comment-thread-container';
+
+  // Group comments by their thread ID (discussion_id for GitLab, or chaining for GitHub)
+  // For simplicity here, we display them in chronological order as a single thread
+  // since they are already filtered by line number.
+  
+  comments.forEach((comment, index) => {
+    const commentEl = document.createElement('div');
+    commentEl.className = 'comment-item';
+    if (comment.in_reply_to_id || (index > 0 && comment.discussion_id)) {
+        commentEl.classList.add('comment-reply');
+    }
+
+    const avatar = document.createElement('img');
+    avatar.className = 'comment-avatar';
+    avatar.src = comment.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(comment.author)}&background=random`;
+    commentEl.appendChild(avatar);
+
+    const contentWrapper = document.createElement('div');
+    contentWrapper.className = 'comment-content';    const header = document.createElement('div');
+    header.className = 'comment-header';
+    
+    const authorName = document.createElement('span');
+    authorName.className = 'comment-author';
+    authorName.textContent = comment.author;
+    header.appendChild(authorName);
+
+    const time = document.createElement('span');
+    time.className = 'comment-time';
+    time.textContent = new Date(comment.created_at).toLocaleString();
+    header.appendChild(time);
+
+    if (comment.is_batched) {
+        const badge = document.createElement('span');
+        badge.className = 'comment-badge-batched';
+        badge.textContent = 'PENDING';
+        header.appendChild(badge);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'comment-remove-btn';
+        removeBtn.textContent = '✕';
+        removeBtn.addEventListener('click', () => {
+            store.removeBatchedComment(comment.id);
+            annotationVersion.value++;
+        });
+        header.appendChild(removeBtn);
+    } else {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'comment-remove-btn';
+        deleteBtn.innerHTML = TRASH_ICON;
+        deleteBtn.title = 'Delete comment';
+        deleteBtn.addEventListener('click', () => deleteRemoteComment(comment));
+        header.appendChild(deleteBtn);
+    }
+
+    contentWrapper.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'comment-body markdown-body';
+    // Render markdown and sanitize
+    const rawHtml = marked.parse(comment.body) as string;
+    body.innerHTML = DOMPurify.sanitize(rawHtml);
+    contentWrapper.appendChild(body);
+
+    // Reactions bar
+    const reactionRow = document.createElement('div');
+    reactionRow.className = 'reaction-bar';
+    (comment.reactions || []).forEach((r: any) => {
+        const rel = document.createElement('div');
+        rel.className = 'reaction-item';
+        rel.textContent = `${r.name} ${r.count}`;
+        rel.addEventListener('click', () => addReaction(comment, r.name));
+        reactionRow.appendChild(rel);
+    });
+    const addReactBtn = document.createElement('button');
+    addReactBtn.className = 'reaction-add-btn';
+    addReactBtn.textContent = '+';
+    addReactBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Toggle picker popup logic for reactions
+        const pickerPopup = createEmojiPicker((emoji) => {
+            addReaction(comment, emoji);
+        });
+        pickerPopup.className = 'emoji-picker-container';
+        pickerPopup.style.position = 'absolute';
+        pickerPopup.style.bottom = '100%';
+        pickerPopup.style.left = '0';
+        
+        // Slightly hacky: just add it and trigger click
+        addReactBtn.parentElement?.appendChild(pickerPopup);
+        pickerPopup.querySelector('button')?.click();
+    });
+    reactionRow.appendChild(addReactBtn);
+    contentWrapper.appendChild(reactionRow);
+
+    commentEl.appendChild(contentWrapper);
+    container.appendChild(commentEl);
+  });
+
+  // Reply Input directly visible at the end of the thread
+  const replyWrapper = document.createElement('div');
+  replyWrapper.className = 'reply-input-wrapper';
+
+  const replyInput = document.createElement('textarea');
+  replyInput.className = 'reply-textarea';
+  replyInput.placeholder = 'Write a reply...';
+  replyInput.rows = 1;
+  replyInput.addEventListener('input', () => {
+    replyInput.style.height = 'auto';
+    replyInput.style.height = replyInput.scrollHeight + 'px';
+  });
+
+  const replyActions = document.createElement('div');
+  replyActions.className = 'reply-actions';
+  
+  const replyEmojiPicker = createEmojiPicker((emoji) => {
+    const start = replyInput.selectionStart;
+    const end = replyInput.selectionEnd;
+    const text = replyInput.value;
+    replyInput.value = text.substring(0, start) + emoji + text.substring(end);
+    replyInput.focus();
+    replyInput.selectionStart = replyInput.selectionEnd = start + emoji.length;
+  });
+  replyActions.appendChild(replyEmojiPicker);
+  
+  const sendReplyBtn = document.createElement('button');
+  sendReplyBtn.className = 'inline-btn inline-btn-primary';
+  sendReplyBtn.textContent = 'Reply';
+  sendReplyBtn.addEventListener('click', async () => {
+    const body = replyInput.value.trim();
+    if (!body) return;
+
+    sendReplyBtn.disabled = true;
+    sendReplyBtn.textContent = '...';
+
+    try {
+        // We use the first comment of the thread as base for the reply
+        const baseComment = comments[0];
+        const newComment = await postReply(baseComment, body);
+        store.remoteComments.push(newComment);
+        annotationVersion.value++;
+    } catch (err) {
+        alert(`Error: ${(err as Error).message}`);
+        sendReplyBtn.disabled = false;
+        sendReplyBtn.textContent = 'Reply';
+    }
+  });
+
+  replyActions.appendChild(sendReplyBtn);
+  replyWrapper.appendChild(replyInput);
+  replyWrapper.appendChild(replyActions);
+  container.appendChild(replyWrapper);
+
+  return container;
+};
 
 // --- Line annotations computed ---
 
@@ -403,36 +676,43 @@ const lineAnnotations = computed(() => {
 
   const annotations: DiffLineAnnotation<any>[] = [];
 
-  // Add batched comments for current file as annotations
-  const currentFileComments = store.batchedComments.filter(
-    (c) => c.new_path === store.selectedFile
-  );
-  for (const comment of currentFileComments) {
-    annotations.push({
-      lineNumber: comment.new_line,
-      side: 'additions' as AnnotationSide,
-      metadata: { type: 'comment', comment },
-    });
-  }
+  // Group all comments (remote + batched) by line
+  const commentsByLine: Record<string, any[]> = {};
 
-  // Add remote comments for current file as annotations
-  const currentFileRemoteComments = store.remoteComments.filter(
-    (c) => c.new_path === store.selectedFile
-  );
-  for (const comment of currentFileRemoteComments) {
+  // Batched
+  store.batchedComments
+    .filter((c) => c.new_path === store.selectedFile)
+    .forEach((c) => {
+      const key = `${c.new_line}`;
+      if (!commentsByLine[key]) commentsByLine[key] = [];
+      commentsByLine[key].push({ ...c, is_batched: true });
+    });
+
+  // Remote
+  store.remoteComments
+    .filter((c) => c.new_path === store.selectedFile)
+    .forEach((c) => {
+      const key = `${c.new_line}`;
+      if (!commentsByLine[key]) commentsByLine[key] = [];
+      commentsByLine[key].push(c);
+    });
+
+  // Create thread annotations
+  for (const [line, comments] of Object.entries(commentsByLine)) {
     annotations.push({
-      lineNumber: comment.new_line,
+      lineNumber: parseInt(line),
       side: 'additions' as AnnotationSide,
-      metadata: { type: 'remote', comment },
+      metadata: { type: 'thread', comments },
     });
   }
 
   // Add the active inline editor as an annotation
-  if (inlineCommentLine.value) {
+  if (inlineCommentLocation.value) {
     annotations.push({
-      lineNumber: inlineCommentLine.value.lineNumber,
-      side: inlineCommentLine.value.side,
+      lineNumber: inlineCommentLocation.value.lineNumber,
+      side: inlineCommentLocation.value.side,
       metadata: { type: 'editor' },
+      range: inlineCommentLocation.value.range,
     });
   }
 
@@ -803,55 +1083,225 @@ const lineAnnotations = computed(() => {
   color: #c9d1d9;
 }
 
-/* Batched comment bubble */
-.inline-comment-bubble {
+/* Comment Threading & Styling */
+.comment-thread-container {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 16px;
-  margin: 4px 8px;
-  background: #1c2128;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  color: #c9d1d9;
-  font-size: 0.85rem;
-}
-.inline-comment-body {
-  flex: 1;
-}
-.inline-comment-remove {
-  background: none;
-  border: none;
-  color: #8b949e;
-  cursor: pointer;
-  font-size: 0.9rem;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.inline-comment-remove:hover {
-  color: #f85149;
-  background: rgba(248, 81, 73, 0.1);
-}
-
-/* Remote (existing) comments */
-.inline-comment-remote {
   padding: 8px 16px;
   margin: 4px 8px;
   background: #161b22;
   border: 1px solid #30363d;
-  border-left: 3px solid #58a6ff;
   border-radius: 6px;
+}
+.comment-item {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+}
+.comment-item:not(:last-child) {
+  border-bottom: 1px solid #21262d;
+}
+.comment-reply {
+  margin-left: 24px;
+  border-left: 2px solid #30363d;
+  padding-left: 12px;
+}
+.comment-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #30363d;
+  flex-shrink: 0;
+}
+.comment-content {
+  flex: 1;
+  min-width: 0;
+}
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.comment-author {
+  font-weight: 600;
+  color: #c9d1d9;
   font-size: 0.85rem;
 }
-.inline-comment-remote-header {
-  font-weight: 600;
-  color: #58a6ff;
-  margin-bottom: 4px;
-  font-size: 0.8rem;
+.comment-time {
+  font-size: 0.75rem;
+  color: #8b949e;
 }
-.inline-comment-remote-body {
+.comment-badge-batched {
+  font-size: 0.65rem;
+  background: #b67501;
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+.comment-remove-btn {
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0 4px;
+}
+.comment-remove-btn svg {
+  vertical-align: middle;
+}
+.comment-remove-btn:hover {
+  color: #f85149;
+}
+
+/* Reply Input Styling */
+.reply-input-wrapper {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reply-textarea {
+  width: 100%;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  resize: none;
+  overflow: hidden;
+  min-height: 36px;
+  box-sizing: border-box;
+}
+.reply-textarea:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+.reply-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Emoji Picker & Reactions */
+.emoji-picker-container {
+  position: relative;
+  display: inline-block;
+}
+.emoji-picker-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+.emoji-picker-btn:hover {
+  background: #30363d;
+}
+.emoji-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 1000;
+  margin-bottom: 8px;
+}
+.emoji-item {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 4px;
+  border-radius: 4px;
+}
+.emoji-item:hover {
+  background: #30363d;
+}
+
+.reaction-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 4px;
+}
+.reaction-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #8b949e;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.reaction-item:hover {
+  border-color: #58a6ff;
+  background: #21262d;
+}
+.reaction-item.active {
+  background: rgba(56, 139, 253, 0.15);
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+.reaction-add-btn {
+  background: none;
+  border: 1px dashed #30363d;
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #8b949e;
+  cursor: pointer;
+}
+.reaction-add-btn:hover {
+  border-color: #8b949e;
+  color: #fff;
+}
+
+/* Markdown Support */
+.markdown-body {
   color: #c9d1d9;
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+.markdown-body :deep(pre) {
+  background-color: #0d1117;
+  padding: 12px;
+  border-radius: 6px;
+  overflow: auto;
+  margin: 8px 0;
+}
+.markdown-body :deep(code) {
+  background-color: rgba(110, 118, 129, 0.4);
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 85%;
+}
+.markdown-body :deep(p) {
+  margin: 0 0 8px 0;
+}
+.markdown-body :deep(ul), .markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin: 8px 0;
 }
 </style>

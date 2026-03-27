@@ -6,6 +6,7 @@ export interface FileNode {
   path: string;
   isDir: boolean;
   children?: Record<string, FileNode>;
+  commentCount?: number;
 }
 
 const props = defineProps<{
@@ -61,6 +62,9 @@ const currentDepth = computed(() => props.depth || 0);
         <span class="status-dot" :class="{ viewed: isViewed }"></span>
       </div>
       <span class="node-name">{{ node.name }}</span>
+      <div v-if="node.commentCount && node.commentCount > 0" class="comment-badge">
+        {{ node.commentCount }}
+      </div>
     </div>
     
     <div v-if="node.isDir && isOpen" class="node-children">
@@ -130,5 +134,16 @@ export default {
 }
 .node-name {
   flex: 1;
+}
+.comment-badge {
+  background: #007acc;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: bold;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 14px;
+  text-align: center;
+  margin-left: 6px;
 }
 </style>

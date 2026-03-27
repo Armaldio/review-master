@@ -2,6 +2,9 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useReviewStore } from '../store';
+import SecurityBanner from '../components/SecurityBanner.vue';
+
+import { createProvider, parseUrl, BaseProvider } from '../providers';
 
 const router = useRouter();
 const reviewStore = useReviewStore();
@@ -10,8 +13,15 @@ const loading = ref(false);
 const errorMsg = ref('');
 const recentMrs = ref<Array<{ url: string, title: string, project: string }>>([]);
 
-onMounted(() => {
-  const hasAnyToken = localStorage.getItem('gitlab_pat') || localStorage.getItem('github_pat');
+onMounted(async () => {
+  await reviewStore.initializeKeyringStatus();
+  const glRes = await window.electronAPI.getSecret('gitlab_pat');
+  const ghRes = await window.electronAPI.getSecret('github_pat');
+  const hasAnyToken = (glRes.success && glRes.value) || 
+                       (ghRes.success && ghRes.value) ||
+                       localStorage.getItem('gitlab_pat') || 
+                       localStorage.getItem('github_pat');
+                       
   if (!hasAnyToken) {
     router.push('/settings');
   }
@@ -51,237 +61,7 @@ interface ParsedUrl {
   projectPath: string;  // "owner/repo" for both
 }
 
-const parseUrl = (url: string): ParsedUrl => {
-  const urlObj = new URL(url);
-  const host = urlObj.origin;
-
-  // GitHub: /{owner}/{repo}/pull/{number}
-  const ghMatch = urlObj.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-  if (ghMatch) {
-    return {
-      platform: 'github',
-      host,
-      owner: ghMatch[1],
-      repo: ghMatch[2],
-      number: ghMatch[3],
-      projectPath: `${ghMatch[1]}/${ghMatch[2]}`,
-    };
-  }
-
-  // GitLab: /{project_path}/-/merge_requests/{iid}
-  const glMatch = urlObj.pathname.match(/^\/(.+?)\/-\/merge_requests\/(\d+)/);
-  if (glMatch) {
-    return {
-      platform: 'gitlab',
-      host,
-      owner: '',
-      repo: '',
-      number: glMatch[2],
-      projectPath: glMatch[1],
-    };
-  }
-
-  throw new Error('Invalid URL format. Supported:\n• GitLab: https://gitlab.com/org/project/-/merge_requests/42\n• GitHub: https://github.com/owner/repo/pull/123');
-};
-
-// --- GitLab flow ---
-
-const initGitLab = async (parsed: ParsedUrl) => {
-  const pat = localStorage.getItem('gitlab_pat');
-  if (!pat) throw new Error('No GitLab PAT found. Go to Settings.');
-
-  const { host, projectPath, number: mrIid } = parsed;
-  const encodedProjectPath = encodeURIComponent(projectPath);
-
-  // Clone/Fetch
-  const appData = await window.electronAPI.getAppPath();
-  const targetPath = `${appData}/review-master-repos/${projectPath}`;
-  const cloneUrl = `${host}/${projectPath}.git`.replace('https://', `https://oauth2:${pat}@`);
-
-  const cloneRes = await window.electronAPI.cloneRepo(cloneUrl, targetPath);
-  if (!cloneRes.success) throw new Error(`Clone failed: ${cloneRes.error}`);
-
-  // Fetch diffs
-  const diffsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, {
-    headers: { 'PRIVATE-TOKEN': pat }
-  });
-  if (!diffsRes.ok) throw new Error(`Failed to fetch diffs: ${diffsRes.statusText}`);
-  const diffs = await diffsRes.json();
-
-  // Fetch MR info
-  const infoRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}`, {
-    headers: { 'PRIVATE-TOKEN': pat }
-  });
-  const mrData = await infoRes.json();
-
-  // Fetch versions
-  const versionsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/versions`, {
-    headers: { 'PRIVATE-TOKEN': pat }
-  });
-  const versions = await versionsRes.json();
-  const latestVersion = versions[0];
-
-  // Fetch user
-  const userRes = await fetch(`${host}/api/v4/user`, {
-    headers: { 'PRIVATE-TOKEN': pat }
-  });
-  if (!userRes.ok) throw new Error('Failed to fetch user info');
-  const userData = await userRes.json();
-
-  // CODEOWNERS
-  const codeownersPaths = [
-    `${targetPath}/CODEOWNERS`,
-    `${targetPath}/.gitlab/CODEOWNERS`,
-    `${targetPath}/docs/CODEOWNERS`
-  ];
-  let rules: Array<{ pattern: string, owners: string[] }> = [];
-  for (const path of codeownersPaths) {
-    const res = await window.electronAPI.readFile(path);
-    if (res.success && res.content) {
-      rules = parseCodeowners(res.content);
-      break;
-    }
-  }
-
-  // Fetch existing discussions/comments
-  const discussionsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/discussions`, {
-    headers: { 'PRIVATE-TOKEN': pat }
-  });
-  let remoteComments: any[] = [];
-  if (discussionsRes.ok) {
-    const discussions = await discussionsRes.json();
-    for (const discussion of discussions) {
-      for (const note of discussion.notes) {
-        if (note.position && note.position.new_line) {
-          remoteComments.push({
-            id: note.id.toString(),
-            body: note.body,
-            author: note.author?.name || note.author?.username || 'Unknown',
-            new_path: note.position.new_path,
-            old_path: note.position.old_path,
-            new_line: note.position.new_line,
-            created_at: note.created_at,
-          });
-        }
-      }
-    }
-  }
-
-  saveToHistory(mrUrl.value, mrData.title, projectPath);
-
-  reviewStore.platform = 'gitlab';
-  reviewStore.mrData = { ...mrData, latestVersion, host, encodedProjectPath, mrIid };
-  reviewStore.diffs = diffs;
-  reviewStore.currentUser = userData;
-  reviewStore.codeownersRules = rules;
-  reviewStore.remoteComments = remoteComments;
-
-  if (diffs.length > 0) {
-    reviewStore.selectFile(diffs[0].new_path);
-  }
-};
-
-// --- GitHub flow ---
-
-const initGitHub = async (parsed: ParsedUrl) => {
-  const pat = localStorage.getItem('github_pat');
-  if (!pat) throw new Error('No GitHub PAT found. Go to Settings.');
-
-  const { owner, repo, number: prNumber, projectPath } = parsed;
-  const apiBase = 'https://api.github.com';
-  const headers: HeadersInit = {
-    'Authorization': `Bearer ${pat}`,
-    'Accept': 'application/vnd.github.v3+json',
-  };
-
-  // Clone/Fetch
-  const appData = await window.electronAPI.getAppPath();
-  const targetPath = `${appData}/review-master-repos/${projectPath}`;
-  const cloneUrl = `https://x-access-token:${pat}@github.com/${projectPath}.git`;
-
-  const cloneRes = await window.electronAPI.cloneRepo(cloneUrl, targetPath);
-  if (!cloneRes.success) throw new Error(`Clone failed: ${cloneRes.error}`);
-
-  // Fetch PR info
-  const infoRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
-  if (!infoRes.ok) throw new Error(`Failed to fetch PR info: ${infoRes.statusText}`);
-  const prData = await infoRes.json();
-
-  // Fetch PR files (diffs)
-  const filesRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=300`, { headers });
-  if (!filesRes.ok) throw new Error(`Failed to fetch PR files: ${filesRes.statusText}`);
-  const ghFiles = await filesRes.json();
-
-  // Normalize GitHub files to match GitLab diff format
-  const diffs = ghFiles.map((f: any) => ({
-    new_path: f.filename,
-    old_path: f.previous_filename || f.filename,
-    diff: f.patch || '',
-    new_file: f.status === 'added',
-    deleted_file: f.status === 'removed',
-    renamed_file: f.status === 'renamed',
-  }));
-
-  // Fetch user
-  const userRes = await fetch(`${apiBase}/user`, { headers });
-  if (!userRes.ok) throw new Error('Failed to fetch user info');
-  const userData = await userRes.json();
-
-  // CODEOWNERS
-  const codeownersPaths = [
-    `${targetPath}/CODEOWNERS`,
-    `${targetPath}/.github/CODEOWNERS`,
-    `${targetPath}/docs/CODEOWNERS`
-  ];
-  let rules: Array<{ pattern: string, owners: string[] }> = [];
-  for (const path of codeownersPaths) {
-    const res = await window.electronAPI.readFile(path);
-    if (res.success && res.content) {
-      rules = parseCodeowners(res.content);
-      break;
-    }
-  }
-  // Fetch existing review comments
-  const commentsRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=300`, { headers });
-  let remoteComments: any[] = [];
-  if (commentsRes.ok) {
-    const ghComments = await commentsRes.json();
-    for (const c of ghComments) {
-      if (c.path && c.line) {
-        remoteComments.push({
-          id: c.id.toString(),
-          body: c.body,
-          author: c.user?.login || 'Unknown',
-          new_path: c.path,
-          old_path: c.path,
-          new_line: c.line,
-          created_at: c.created_at,
-        });
-      }
-    }
-  }
-
-  saveToHistory(mrUrl.value, prData.title, projectPath);
-
-  reviewStore.platform = 'github';
-  reviewStore.mrData = {
-    title: prData.title,
-    host: 'https://api.github.com',
-    owner,
-    repo,
-    prNumber,
-    headSha: prData.head.sha,
-    baseSha: prData.base.sha,
-  };
-  reviewStore.diffs = diffs;
-  reviewStore.currentUser = { username: userData.login, ...userData };
-  reviewStore.codeownersRules = rules;
-  reviewStore.remoteComments = remoteComments;
-
-  if (diffs.length > 0) {
-    reviewStore.selectFile(diffs[0].new_path);
-  }
-};
+// Removed platform-specific init functions, now handled by providers
 
 // --- Main entry ---
 
@@ -290,12 +70,24 @@ const initializeReview = async () => {
   errorMsg.value = '';
 
   try {
+    const provider = createProvider(mrUrl.value);
     const parsed = parseUrl(mrUrl.value);
+    
+    await provider.initialize(parsed);
+    
+    // Sycn store with provider data
+    reviewStore.activeProvider = provider;
+    reviewStore.mrData = provider.mrData;
+    reviewStore.diffs = provider.diffs;
+    reviewStore.currentUser = provider.currentUser;
+    reviewStore.platform = provider.platform;
+    reviewStore.remoteComments = provider.remoteComments;
+    reviewStore.codeownersRules = provider.codeownersRules;
 
-    if (parsed.platform === 'github') {
-      await initGitHub(parsed);
-    } else {
-      await initGitLab(parsed);
+    saveToHistory(mrUrl.value, provider.mrData?.title || '', parsed.projectPath);
+    
+    if (provider.diffs.length > 0) {
+      reviewStore.selectFile(provider.diffs[0].new_path);
     }
 
     router.push('/review');
@@ -327,6 +119,7 @@ const parseCodeowners = (content: string) => {
 
 <template>
   <div class="init-container">
+    <SecurityBanner />
     <h2>Initialize Review</h2>
     <div class="form-group">
       <label for="mrUrl">Merge Request / Pull Request URL</label>

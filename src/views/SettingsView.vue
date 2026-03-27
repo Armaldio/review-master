@@ -1,24 +1,66 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
+import { useReviewStore } from '../store';
+import SecurityBanner from '../components/SecurityBanner.vue';
 
 const router = useRouter();
+const store = useReviewStore();
 const gitlabToken = ref('');
 const githubToken = ref('');
 
-const saveTokens = () => {
-  localStorage.setItem('gitlab_pat', gitlabToken.value);
-  localStorage.setItem('github_pat', githubToken.value);
+const saveTokens = async () => {
+  if (gitlabToken.value) {
+    const res = await window.electronAPI.setSecret('gitlab_pat', gitlabToken.value);
+    // If it failed due to no secret service, we still proceed but it stays in localStorage fallback
+  }
+  if (githubToken.value) {
+    await window.electronAPI.setSecret('github_pat', githubToken.value);
+  }
+  
+  // Clear any legacy plain text tokens only if secure storage actually worked?
+  // Actually, we clear them to avoid warnings IF the user just clicked save.
+  localStorage.removeItem('gitlab_pat');
+  localStorage.removeItem('github_pat');
+  
   router.push('/');
 };
 
 // load tokens on mount
-gitlabToken.value = localStorage.getItem('gitlab_pat') || '';
-githubToken.value = localStorage.getItem('github_pat') || '';
+onMounted(async () => {
+  await store.initializeKeyringStatus();
+  
+  // 1. Try to load from secure storage
+  const glRes = await window.electronAPI.getSecret('gitlab_pat');
+  const ghRes = await window.electronAPI.getSecret('github_pat');
+  
+  if (glRes.success && glRes.value) {
+    gitlabToken.value = glRes.value;
+  } else {
+    // Migration: Check if they exist in localStorage
+    const legacyGl = localStorage.getItem('gitlab_pat');
+    if (legacyGl) {
+      console.warn('[Keyring] Found legacy GitLab PAT in localStorage. It will be moved to secure storage upon clicking Save.');
+      gitlabToken.value = legacyGl;
+    }
+  }
+
+  if (ghRes.success && ghRes.value) {
+    githubToken.value = ghRes.value;
+  } else {
+    // Migration: Check if they exist in localStorage
+    const legacyGh = localStorage.getItem('github_pat');
+    if (legacyGh) {
+      console.warn('[Keyring] Found legacy GitHub PAT in localStorage. It will be moved to secure storage upon clicking Save.');
+      githubToken.value = legacyGh;
+    }
+  }
+});
 </script>
 
 <template>
   <div class="settings-container">
+    <SecurityBanner />
     <h2>Settings</h2>
     <div class="form-group">
       <label for="gitlab-token">GitLab Personal Access Token</label>

@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, shallowRef } from 'vue';
+import type { BaseProvider } from '../providers/BaseProvider';
 
 export const useReviewStore = defineStore('review', () => {
+  const activeProvider = shallowRef<BaseProvider | null>(null);
   const mrData = ref<any>(null);
   const diffs = ref<any[]>([]);
   const viewedFiles = ref<Set<string>>(new Set());
@@ -11,6 +13,16 @@ export const useReviewStore = defineStore('review', () => {
   const platform = ref<'gitlab' | 'github'>('gitlab');
   const remoteComments = ref<any[]>([]);
   const codeownersRules = ref<Array<{ pattern: string, owners: string[] }>>([]);
+  const isSecureStorageAvailable = ref<boolean>(true);
+  const keyringErrorMessage = ref<string | null>(null);
+
+  const initializeKeyringStatus = async () => {
+    const res = await window.electronAPI.checkKeyring();
+    isSecureStorageAvailable.value = res.success;
+    if (!res.success) {
+      keyringErrorMessage.value = res.message || 'Keyring service unavailable';
+    }
+  };
   
   const markFileAsViewed = (filePath: string) => {
     viewedFiles.value.add(filePath);
@@ -28,16 +40,24 @@ export const useReviewStore = defineStore('review', () => {
     batchedComments.value = batchedComments.value.filter(c => c.id !== id);
   };
 
+  const removeRemoteComment = (id: string) => {
+    remoteComments.value = remoteComments.value.filter(c => c.id !== id);
+  };
+
   const clearBatchedComments = () => {
     batchedComments.value = [];
   };
 
   return {
+    activeProvider,
     mrData,
     diffs,
     viewedFiles,
     selectedFile,
     batchedComments,
+    isSecureStorageAvailable,
+    keyringErrorMessage,
+    initializeKeyringStatus,
     currentUser,
     platform,
     remoteComments,
@@ -46,6 +66,7 @@ export const useReviewStore = defineStore('review', () => {
     selectFile,
     addBatchedComment,
     removeBatchedComment,
-    clearBatchedComments
+    clearBatchedComments,
+    removeRemoteComment
   };
 });
