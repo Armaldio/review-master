@@ -128,7 +128,7 @@ app.on('ready', () => {
       return { success: true, value: decrypted };
     } catch (error: any) {
       console.error(`[Secrets] Failed to get secret for ${account}:`, error);
-      return { success: true, value: null };
+      return { success: false, error: 'ERR_DECRYPTION_FAILED', message: (error as Error).message };
     }
   });
 
@@ -145,7 +145,11 @@ app.on('ready', () => {
   });
 
   ipcMain.handle('check-storage-encryption', async () => {
-    return { success: safeStorage.isEncryptionAvailable() };
+    const available = safeStorage.isEncryptionAvailable();
+    return { 
+      success: available,
+      message: available ? 'Secure storage available' : 'Secure storage is not available on this system'
+    };
   });
 
   createWindow();

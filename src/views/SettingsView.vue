@@ -10,18 +10,25 @@ const gitlabToken = ref('');
 const githubToken = ref('');
 
 const saveTokens = async () => {
+  let gitlabSaved = true;
+  let githubSaved = true;
+
   if (gitlabToken.value) {
     const res = await window.electronAPI.setSecret('gitlab_pat', gitlabToken.value);
-    // If it failed due to no secret service, we still proceed but it stays in localStorage fallback
+    gitlabSaved = res.success;
   }
   if (githubToken.value) {
-    await window.electronAPI.setSecret('github_pat', githubToken.value);
+    const res = await window.electronAPI.setSecret('github_pat', githubToken.value);
+    githubSaved = res.success;
   }
   
-  // Clear any legacy plain text tokens only if secure storage actually worked?
-  // Actually, we clear them to avoid warnings IF the user just clicked save.
-  localStorage.removeItem('gitlab_pat');
-  localStorage.removeItem('github_pat');
+  // Clear any legacy plain text tokens only if secure storage actually worked
+  if (gitlabSaved) {
+    localStorage.removeItem('gitlab_pat');
+  }
+  if (githubSaved) {
+    localStorage.removeItem('github_pat');
+  }
   
   router.push('/');
 };
