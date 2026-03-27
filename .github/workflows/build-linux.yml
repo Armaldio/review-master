@@ -18,7 +18,7 @@ jobs:
     - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y rpm fakeroot
+        sudo apt-get install -y rpm fakeroot libfuse2 squashfs-tools
 
     - name: Install Node.js
       uses: actions/setup-node@v4
