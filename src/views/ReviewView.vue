@@ -803,8 +803,7 @@ const lineAnnotations = computed(() => {
     annotations.push({
       lineNumber: inlineCommentLocation.value.lineNumber,
       side: inlineCommentLocation.value.side,
-      metadata: { type: 'editor' },
-      range: inlineCommentLocation.value.range,
+      metadata: { type: 'editor', range: inlineCommentLocation.value.range },
     });
   }
 

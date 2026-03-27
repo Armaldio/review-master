@@ -144,7 +144,7 @@ app.on('ready', () => {
     }
   });
 
-  ipcMain.handle('check-keyring', async () => {
+  ipcMain.handle('check-storage-encryption', async () => {
     return { success: safeStorage.isEncryptionAvailable() };
   });
 

@@ -28,7 +28,7 @@ const saveTokens = async () => {
 
 // load tokens on mount
 onMounted(async () => {
-  await store.initializeKeyringStatus();
+  await store.initializeStorageStatus();
   
   // 1. Try to load from secure storage
   const glRes = await window.electronAPI.getSecret('gitlab_pat');
@@ -40,7 +40,7 @@ onMounted(async () => {
     // Migration: Check if they exist in localStorage
     const legacyGl = localStorage.getItem('gitlab_pat');
     if (legacyGl) {
-      console.warn('[Keyring] Found legacy GitLab PAT in localStorage. It will be moved to secure storage upon clicking Save.');
+      console.warn('[Storage] Found legacy GitLab PAT in localStorage. It will be moved to secure storage upon clicking Save.');
       gitlabToken.value = legacyGl;
     }
   }
@@ -51,7 +51,7 @@ onMounted(async () => {
     // Migration: Check if they exist in localStorage
     const legacyGh = localStorage.getItem('github_pat');
     if (legacyGh) {
-      console.warn('[Keyring] Found legacy GitHub PAT in localStorage. It will be moved to secure storage upon clicking Save.');
+      console.warn('[Storage] Found legacy GitHub PAT in localStorage. It will be moved to secure storage upon clicking Save.');
       githubToken.value = legacyGh;
     }
   }

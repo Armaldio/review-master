@@ -14,7 +14,7 @@ const errorMsg = ref('');
 const recentMrs = ref<Array<{ url: string, title: string, project: string }>>([]);
 
 onMounted(async () => {
-  await reviewStore.initializeKeyringStatus();
+  await reviewStore.initializeStorageStatus();
   const glRes = await window.electronAPI.getSecret('gitlab_pat');
   const ghRes = await window.electronAPI.getSecret('github_pat');
   const hasAnyToken = (glRes.success && glRes.value) || 
