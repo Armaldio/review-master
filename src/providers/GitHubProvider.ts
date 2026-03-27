@@ -22,14 +22,6 @@ export class GitHubProvider extends BaseProvider {
       'Accept': 'application/vnd.github.squirrel-girl-preview+json',
     };
 
-    // Clone/Fetch repository
-    const appData = await (window as any).electronAPI.getAppPath();
-    const targetPath = `${appData}/review-master-repos/${projectPath}`;
-    const cloneUrl = `https://x-access-token:${pat}@github.com/${projectPath}.git`;
-    
-    const cloneRes = await (window as any).electronAPI.cloneRepo(cloneUrl, targetPath);
-    if (!cloneRes.success) throw new Error(`Clone failed: ${cloneRes.error}`);
-
     // Fetch PR Info
     const infoRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
     if (!infoRes.ok) throw new Error(`Failed to fetch PR info: ${infoRes.statusText}`);
@@ -60,17 +52,23 @@ export class GitHubProvider extends BaseProvider {
         avatar_url: userData.avatar_url
     };
 
-    // Fetch CODEOWNERS
+    // Fetch CODEOWNERS via API
     const codeownersPaths = [
-      `${targetPath}/CODEOWNERS`,
-      `${targetPath}/.github/CODEOWNERS`,
-      `${targetPath}/docs/CODEOWNERS`
+      'CODEOWNERS',
+      '.github/CODEOWNERS',
+      'docs/CODEOWNERS'
     ];
     this.codeownersRules = [];
     for (const path of codeownersPaths) {
-      const res = await (window as any).electronAPI.readFile(path);
-      if (res.success && res.content) {
-        this.codeownersRules = this.parseCodeowners(res.content);
+      const res = await fetch(`${apiBase}/repos/${owner}/${repo}/contents/${path}?ref=${prData.head.sha}`, {
+        headers: { 
+          ...headers,
+          'Accept': 'application/vnd.github.v3.raw'
+        }
+      });
+      if (res.ok) {
+        const content = await res.text();
+        this.codeownersRules = this.parseCodeowners(content);
         break;
       }
     }

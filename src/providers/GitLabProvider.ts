@@ -18,14 +18,6 @@ export class GitLabProvider extends BaseProvider {
     const { host, projectPath, number: mrIid } = parsed;
     const encodedProjectPath = encodeURIComponent(projectPath);
 
-    // Clone/Fetch repository
-    const appData = await (window as any).electronAPI.getAppPath();
-    const targetPath = `${appData}/review-master-repos/${projectPath}`;
-    const cloneUrl = `${host}/${projectPath}.git`.replace('https://', `https://oauth2:${pat}@`);
-
-    const cloneRes = await (window as any).electronAPI.cloneRepo(cloneUrl, targetPath);
-    if (!cloneRes.success) throw new Error(`Clone failed: ${cloneRes.error}`);
-
     // Fetch Diffs
     const diffsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, {
       headers: { 'PRIVATE-TOKEN': pat }
@@ -53,17 +45,20 @@ export class GitLabProvider extends BaseProvider {
     if (!userRes.ok) throw new Error('Failed to fetch user info');
     this.currentUser = await userRes.json();
 
-    // Fetch CODEOWNERS
+    // Fetch CODEOWNERS via API
     const codeownersPaths = [
-      `${targetPath}/CODEOWNERS`,
-      `${targetPath}/.gitlab/CODEOWNERS`,
-      `${targetPath}/docs/CODEOWNERS`
+      'CODEOWNERS',
+      '.gitlab/CODEOWNERS',
+      'docs/CODEOWNERS'
     ];
     this.codeownersRules = [];
     for (const path of codeownersPaths) {
-      const res = await (window as any).electronAPI.readFile(path);
-      if (res.success && res.content) {
-        this.codeownersRules = this.parseCodeowners(res.content);
+      const res = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/repository/files/${encodeURIComponent(path)}/raw?ref=${latestVersion.head_commit_sha}`, {
+        headers: { 'PRIVATE-TOKEN': pat }
+      });
+      if (res.ok) {
+        const content = await res.text();
+        this.codeownersRules = this.parseCodeowners(content);
         break;
       }
     }
