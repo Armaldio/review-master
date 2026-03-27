@@ -41,6 +41,7 @@ app.on('ready', () => {
   });
 
   ipcMain.handle('read-file', async (event, filePath: string) => {
+    // console.log(`[IPC:read-file] Reading file: ${filePath}`); // Disabled to avoid being too spammy
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       return { success: true, content };
@@ -50,20 +51,31 @@ app.on('ready', () => {
   });
 
   ipcMain.handle('clone-repo', async (event, repoUrl: string, targetPath: string) => {
+    console.log(`[IPC:clone-repo] Starting clone/fetch for: ${repoUrl}`);
+    console.log(`[IPC:clone-repo] Target path: ${targetPath}`);
     try {
       // Create directory if it doesn't exist
       await fs.mkdir(targetPath, { recursive: true });
-      
-      const git: SimpleGit = simpleGit(targetPath);
-      
+
+      const git: SimpleGit = simpleGit({
+        baseDir: targetPath,
+        progress({ method, stage, progress }) {
+            console.log(`[IPC:clone-repo] git ${method} - ${stage} stage ${progress}% complete`);
+        }
+      });
+
       // Check if it's already a git repo
       const isRepo = await git.checkIsRepo();
       if (!isRepo) {
-        await git.clone(repoUrl, targetPath);
+        console.log(`[IPC:clone-repo] Repository not found locally. Cloning...`);
+        await git.clone(repoUrl, targetPath, ['--progress']);
+        console.log(`[IPC:clone-repo] Clone completed successfully.`);
       } else {
-        await git.fetch();
+        console.log(`[IPC:clone-repo] Existing repository found. Fetching updates...`);
+        await git.fetch(['--progress']);
+        console.log(`[IPC:clone-repo] Fetch completed successfully.`);
       }
-      
+
       return { success: true };
     } catch (error) {
       console.error('Error cloning repo:', error);

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "module": "node16",
+    "module": "ESNext",
     "allowJs": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -9,8 +9,16 @@
     "sourceMap": true,
     "baseUrl": ".",
     "outDir": "dist",
-    "moduleResolution": "node16",
-    "ignoreDeprecations": "6.0",
-    "resolveJsonModule": true
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "strict": true,
+    "jsx": "preserve",
+    "types": [
+      "vite/client"
+    ],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ]
   }
 }

@@ -8,6 +8,8 @@ export const useReviewStore = defineStore('review', () => {
   const selectedFile = ref<string | null>(null);
   const batchedComments = ref<any[]>([]);
   const currentUser = ref<any>(null);
+  const platform = ref<'gitlab' | 'github'>('gitlab');
+  const remoteComments = ref<any[]>([]);
   const codeownersRules = ref<Array<{ pattern: string, owners: string[] }>>([]);
   
   const markFileAsViewed = (filePath: string) => {
@@ -37,6 +39,8 @@ export const useReviewStore = defineStore('review', () => {
     selectedFile,
     batchedComments,
     currentUser,
+    platform,
+    remoteComments,
     codeownersRules,
     markFileAsViewed,
     selectFile,
