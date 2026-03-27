@@ -14,13 +14,13 @@ export const useReviewStore = defineStore('review', () => {
   const remoteComments = ref<any[]>([]);
   const codeownersRules = ref<Array<{ pattern: string, owners: string[] }>>([]);
   const isSecureStorageAvailable = ref<boolean>(true);
-  const keyringErrorMessage = ref<string | null>(null);
+  const secureStorageErrorMessage = ref<string | null>(null);
 
-  const initializeKeyringStatus = async () => {
-    const res = await window.electronAPI.checkKeyring();
+  const initializeStorageStatus = async () => {
+    const res = await window.electronAPI.checkStorage();
     isSecureStorageAvailable.value = res.success;
     if (!res.success) {
-      keyringErrorMessage.value = res.message || 'Keyring service unavailable';
+      secureStorageErrorMessage.value = res.message || 'Secure storage service unavailable';
     }
   };
   
@@ -56,8 +56,8 @@ export const useReviewStore = defineStore('review', () => {
     selectedFile,
     batchedComments,
     isSecureStorageAvailable,
-    keyringErrorMessage,
-    initializeKeyringStatus,
+    secureStorageErrorMessage,
+    initializeStorageStatus,
     currentUser,
     platform,
     remoteComments,

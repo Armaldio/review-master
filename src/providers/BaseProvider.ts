@@ -11,7 +11,7 @@ export abstract class BaseProvider {
   protected abstract patLabel: string;
 
   /**
-   * Helper to fetch personal access token with keyring fallback
+   * Helper to fetch personal access token with secure storage fallback
    */
   public async getPat(): Promise<string | null> {
     const key = this.patLabel;
@@ -20,7 +20,7 @@ export abstract class BaseProvider {
     
     const fallback = localStorage.getItem(key);
     if (fallback) {
-      console.warn(`[Keyring] Falling back to localStorage for ${key}.`);
+      console.warn(`[Storage] Falling back to localStorage for ${key}.`);
     }
     return fallback;
   }

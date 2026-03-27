@@ -8,6 +8,6 @@ declare interface Window {
     setSecret: (account: string, value: string) => Promise<{ success: boolean; error?: string; message?: string }>;
     getSecret: (account: string) => Promise<{ success: boolean; value?: string | null; error?: string; message?: string }>;
     deleteSecret: (account: string) => Promise<{ success: boolean; error?: string; message?: string }>;
-    checkKeyring: () => Promise<{ success: boolean; error?: string; message?: string }>;
+    checkStorage: () => Promise<{ success: boolean; message?: string }>;
   };
 }

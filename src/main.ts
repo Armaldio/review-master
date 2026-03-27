@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { simpleGit, SimpleGit } from 'simple-git';
@@ -83,62 +83,69 @@ app.on('ready', () => {
     }
   });
 
-  // --- Keyring IPC Handlers ---
-  const SERVICE_NAME = 'review-master';
-  const { setPassword, getPassword, deletePassword } = require('@napi-rs/keyring');
+  // --- Secrets Storage IPC Handlers (safeStorage) ---
+  const SECRETS_FILE = path.join(app.getPath('userData'), 'secrets.json');
+
+  async function readSecrets() {
+    try {
+      const data = await fs.readFile(SECRETS_FILE, 'utf-8');
+      return JSON.parse(data);
+    } catch {
+      return {};
+    }
+  }
+
+  async function writeSecrets(secrets: Record<string, string>) {
+    await fs.writeFile(SECRETS_FILE, JSON.stringify(secrets, null, 2));
+  }
 
   ipcMain.handle('set-secret', async (event, account: string, value: string) => {
     try {
-      await setPassword(SERVICE_NAME, account, value);
+      if (!safeStorage.isEncryptionAvailable()) {
+        return { success: false, error: 'ERR_ENCRYPTION_UNAVAILABLE', message: 'Encryption is not available on this system' };
+      }
+      const encrypted = safeStorage.encryptString(value).toString('base64');
+      const secrets = await readSecrets();
+      secrets[account] = encrypted;
+      await writeSecrets(secrets);
       return { success: true };
     } catch (error: any) {
-      console.error(`[Keyring] Failed to set secret for ${account}:`, error);
-      // Check for common ServiceUnknown error
-      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
-        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
-      }
-      return { success: false, error: 'ERR_KEYRING_FAILED', message: (error as Error).message };
+      console.error(`[Secrets] Failed to set secret for ${account}:`, error);
+      return { success: false, error: 'ERR_STORAGE_FAILED', message: (error as Error).message };
     }
   });
 
   ipcMain.handle('get-secret', async (event, account: string) => {
     try {
-      const password = await getPassword(SERVICE_NAME, account);
-      return { success: true, value: password };
-    } catch (error: any) {
-      // If service is missing
-      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
-        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
+      if (!safeStorage.isEncryptionAvailable()) {
+        return { success: false, error: 'ERR_ENCRYPTION_UNAVAILABLE', message: 'Encryption is not available' };
       }
-      // Keyring often throws if not found, we treat it as successfully returning null
+      const secrets = await readSecrets();
+      const encrypted = secrets[account];
+      if (!encrypted) return { success: true, value: null };
+
+      const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+      return { success: true, value: decrypted };
+    } catch (error: any) {
+      console.error(`[Secrets] Failed to get secret for ${account}:`, error);
       return { success: true, value: null };
     }
   });
 
   ipcMain.handle('delete-secret', async (event, account: string) => {
     try {
-      await deletePassword(SERVICE_NAME, account);
+      const secrets = await readSecrets();
+      delete secrets[account];
+      await writeSecrets(secrets);
       return { success: true };
     } catch (error: any) {
-      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
-        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
-      }
-      return { success: false, error: 'ERR_KEYRING_FAILED', message: (error as Error).message };
+      console.error(`[Secrets] Failed to delete secret for ${account}:`, error);
+      return { success: false, error: 'ERR_STORAGE_FAILED', message: (error as Error).message };
     }
   });
 
   ipcMain.handle('check-keyring', async () => {
-    try {
-      // Try to get a dummy value to trigger a check
-      await getPassword(SERVICE_NAME, 'check-health');
-      return { success: true };
-    } catch (error: any) {
-      if (error.message?.includes('ServiceUnknown') || error.message?.includes('not activatable')) {
-        return { success: false, error: 'ERR_NO_SECRET_SERVICE', message: error.message };
-      }
-      // If it's just "not found", the service IS alive
-      return { success: true };
-    }
+    return { success: safeStorage.isEncryptionAvailable() };
   });
 
   createWindow();

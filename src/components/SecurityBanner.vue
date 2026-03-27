@@ -16,7 +16,7 @@ const toggleHelp = () => {
       <span class="icon">⚠️</span>
       <div class="message">
         <strong>Insecure Storage Active:</strong> 
-        Your OS keyring service (e.g. gnome-keyring) is missing or unavailable. 
+        The OS secure storage service (e.g. gnome-keyring or kwallet) is missing or unavailable. 
         Tokens are being stored <strong>unencrypted</strong> in localStorage.
       </div>
       <button class="help-btn" @click="toggleHelp">
