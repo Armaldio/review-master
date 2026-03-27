@@ -88,10 +88,8 @@ export class GitLabProvider extends BaseProvider {
               old_path: note.position.old_path,
               new_line: note.position.new_line,
               created_at: note.created_at,
-              reactions: note.award_emoji ? note.award_emoji.map((e: any) => ({
-                   name: e.name === 'thumbsup' ? '👍' : e.name === 'thumbsdown' ? '👎' : e.emoji,
-                   count: 1
-              })) : []
+              author_id: note.author?.id,
+              reactions: note.award_emoji ? this.groupReactions(note.award_emoji) : []
             });
           }
         }
@@ -110,6 +108,23 @@ export class GitLabProvider extends BaseProvider {
       encodedProjectPath,
       latestVersion,
     };
+  }
+
+  private groupReactions(awardEmoji: any[]): any[] {
+    const grouped: Record<string, { name: string, count: number, users: string[] }> = {};
+    
+    awardEmoji.forEach(e => {
+      const char = e.name === 'thumbsup' ? '👍' : e.name === 'thumbsdown' ? '👎' : (e.emoji || e.name);
+      if (!grouped[char]) {
+        grouped[char] = { name: char, count: 0, users: [] };
+      }
+      grouped[char].count++;
+      if (e.user?.name) {
+        grouped[char].users.push(e.user.name);
+      }
+    });
+
+    return Object.values(grouped);
   }
 
   public async postComment(data: any): Promise<Comment> {
@@ -143,6 +158,7 @@ export class GitLabProvider extends BaseProvider {
         old_path: note.position.old_path,
         new_line: note.position.new_line,
         created_at: note.created_at,
+        author_id: note.author?.id,
     };
   }
 
@@ -165,6 +181,7 @@ export class GitLabProvider extends BaseProvider {
         old_path: baseComment.old_path,
         new_line: baseComment.new_line,
         created_at: note.created_at,
+        author_id: note.author?.id,
     };
   }
 
@@ -177,13 +194,38 @@ export class GitLabProvider extends BaseProvider {
     if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
   }
 
-  public async addReaction(commentId: string, emojiName: string): Promise<void> {
+  public async addReaction(comment: any, emojiName: string): Promise<void> {
     const pat = await this.getPat();
-    const res = await fetch(`${this.mrData!.host}/api/v4/projects/${this.mrData!.encodedProjectPath}/merge_requests/${this.mrData!.number}/notes/${commentId}/award_emoji`, {
+    const res = await fetch(`${this.mrData!.host}/api/v4/projects/${this.mrData!.encodedProjectPath}/merge_requests/${this.mrData!.number}/notes/${comment.id}/award_emoji`, {
       method: 'POST',
       headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: emojiName })
     });
     if (!res.ok) throw new Error('Failed to add reaction');
+
+    // Optimistically update UI
+    if (!comment.reactions) comment.reactions = [];
+    const char = emojiName === 'thumbsup' ? '👍' : emojiName === 'thumbsdown' ? '👎' : emojiName;
+    const existing = comment.reactions.find((r: any) => r.name === char);
+    if (existing) {
+        existing.count++;
+        if (this.currentUser?.name) existing.users.push(this.currentUser.name);
+    } else {
+        comment.reactions.push({ 
+            name: char, 
+            count: 1, 
+            users: this.currentUser?.name ? [this.currentUser.name] : [] 
+        });
+    }
+  }
+
+  public async editComment(commentId: string, body: string): Promise<void> {
+    const pat = await this.getPat();
+    const res = await fetch(`${this.mrData!.host}/api/v4/projects/${this.mrData!.encodedProjectPath}/merge_requests/${this.mrData!.number}/notes/${commentId}`, {
+      method: 'PUT',
+      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body })
+    });
+    if (!res.ok) throw new Error(`Edit failed: ${res.statusText}`);
   }
 }

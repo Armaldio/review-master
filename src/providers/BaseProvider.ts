@@ -56,5 +56,7 @@ export abstract class BaseProvider {
   
   public abstract deleteComment(commentId: string): Promise<void>;
   
-  public abstract addReaction(commentId: string, emojiName: string): Promise<void>;
+  public abstract addReaction(comment: any, emojiName: string): Promise<void>;
+
+  public abstract editComment(commentId: string, body: string): Promise<void>;
 }

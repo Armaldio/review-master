@@ -11,12 +11,14 @@ export interface Reaction {
   name: string;
   count: number;
   me?: boolean;
+  users?: string[];
 }
 
 export interface Comment {
   id: string;
   body: string;
   author: string;
+  author_id: string | number;
   avatar_url?: string;
   created_at: string;
   new_path: string;

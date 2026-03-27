@@ -92,6 +92,7 @@ export class GitHubProvider extends BaseProvider {
             old_path: c.path,
             new_line: c.line,
             created_at: c.created_at,
+            author_id: c.user?.id,
             reactions: c.reactions ? [
               { name: '👍', count: c.reactions['+1'] || 0 },
               { name: '👎', count: c.reactions['-1'] || 0 },
@@ -149,6 +150,7 @@ export class GitHubProvider extends BaseProvider {
         old_path: newNote.path,
         new_line: newNote.line,
         created_at: newNote.created_at,
+        author_id: newNote.user?.id,
     };
   }
 
@@ -180,6 +182,7 @@ export class GitHubProvider extends BaseProvider {
         old_path: baseComment.old_path,
         new_line: baseComment.new_line,
         created_at: newNote.created_at,
+        author_id: newNote.user?.id,
     };
   }
 
@@ -192,9 +195,9 @@ export class GitHubProvider extends BaseProvider {
     if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
   }
 
-  public async addReaction(commentId: string, emojiName: string): Promise<void> {
+  public async addReaction(comment: any, emojiName: string): Promise<void> {
     const pat = await this.getPat();
-    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/comments/${commentId}/reactions`, {
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/comments/${comment.id}/reactions`, {
       method: 'POST',
       headers: { 
           'Authorization': `Bearer ${pat}`, 
@@ -204,5 +207,19 @@ export class GitHubProvider extends BaseProvider {
       body: JSON.stringify({ content: emojiName })
     });
     if (!res.ok) throw new Error('Failed to add reaction');
+  }
+
+  public async editComment(commentId: string, body: string): Promise<void> {
+    const pat = await this.getPat();
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/comments/${commentId}`, {
+      method: 'PATCH',
+      headers: { 
+          'Authorization': `Bearer ${pat}`, 
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ body })
+    });
+    if (!res.ok) throw new Error(`Edit failed: ${res.statusText}`);
   }
 }

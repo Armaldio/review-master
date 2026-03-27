@@ -23,11 +23,13 @@ const useTreeView = ref(true);
 const isSubmitting = ref(false);
 
 // Inline comment state
-const inlineCommentLocation = ref<{ 
-  lineNumber: number; 
+const inlineCommentLocation = ref<{
+  lineNumber: number;
   side: AnnotationSide;
   range?: SelectedLineRange;
 } | null>(null);
+const editingCommentId = ref<string | null>(null);
+const editingBody = ref<string>('');
 
 // Track annotation version to force re-renders
 const annotationVersion = ref(0);
@@ -70,7 +72,7 @@ const displayedFiles = computed(() => {
 
 const fileTree = computed(() => {
   const root: FileNode = { name: 'root', path: '', isDir: true, children: {}, commentCount: 0 };
-  
+
   // 1. Map each file to its comment counts
   const countsByFile: Record<string, number> = {};
   for (const c of store.remoteComments) {
@@ -85,11 +87,11 @@ const fileTree = computed(() => {
     const parts = filePath.split('/');
     let current = root;
     let currentPath = '';
-    
+
     for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
         currentPath = currentPath ? `${currentPath}/${part}` : part;
-        
+
         if (!current.children![part]) {
             current.children![part] = {
                 name: part,
@@ -109,7 +111,7 @@ const fileTree = computed(() => {
   // 3. Roll up counts for directories
   const rollout = (node: FileNode): number => {
     if (!node.isDir) return node.commentCount || 0;
-    
+
     let total = 0;
     if (node.children) {
         for (const childName in node.children) {
@@ -134,24 +136,24 @@ const parsedFileDiff = computed(() => {
   if (!file.value || !file.value.diff) return null;
   const f = file.value;
   let patch = `diff --git a/${f.old_path} b/${f.new_path}\n`;
-  
+
   if (f.new_file) patch += `new file mode 100644\n`;
   if (f.deleted_file) patch += `deleted file mode 100644\n`;
-  
+
   if (f.new_file) {
     patch += `--- /dev/null\n`;
   } else {
     patch += `--- a/${f.old_path}\n`;
   }
-  
+
   if (f.deleted_file) {
     patch += `+++ /dev/null\n`;
   } else {
     patch += `+++ b/${f.new_path}\n`;
   }
-  
+
   patch += f.diff;
-  
+
   try {
     const parsed = parsePatchFiles(patch);
     return parsed[0]?.files[0] || null;
@@ -168,6 +170,12 @@ const TRASH_ICON = `
   <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
   <line x1="10" y1="11" x2="10" y2="17"></line>
   <line x1="14" y1="11" x2="14" y2="17"></line>
+</svg>
+`;
+
+const PENCIL_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-edit-2">
+  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
 </svg>
 `;
 
@@ -236,15 +244,23 @@ const addReaction = async (comment: any, emojiChar: string) => {
 
     try {
         const platformEmoji = store.platform === 'github' ? emoji.github : emoji.gitlab;
-        await store.activeProvider.addReaction(comment.id, platformEmoji);
+        await store.activeProvider.addReaction(comment, platformEmoji);
 
         // Optimistically update UI
         if (!comment.reactions) comment.reactions = [];
         const existing = comment.reactions.find((r: any) => r.name === emojiChar);
         if (existing) {
             existing.count++;
+            if (store.currentUser?.name) {
+                if (!existing.users) existing.users = [];
+                existing.users.push(store.currentUser.name);
+            }
         } else {
-            comment.reactions.push({ name: emojiChar, count: 1 });
+            comment.reactions.push({
+                name: emojiChar,
+                count: 1,
+                users: store.currentUser?.name ? [store.currentUser.name] : []
+            });
         }
         annotationVersion.value++;
     } catch (err) {
@@ -292,16 +308,48 @@ const postReply = async (threadComment: any, body: string) => {
 
 const deleteRemoteComment = async (comment: any) => {
   if (!store.activeProvider) return;
-  const confirmed = confirm("Are you sure you want to delete this comment? This action cannot be undone.");
-  if (!confirmed) return;
-
-  try {
-    await store.activeProvider.deleteComment(comment.id);
-    store.removeRemoteComment(comment.id);
-    annotationVersion.value++;
-  } catch (err) {
-    alert(`Error: ${(err as Error).message}`);
+  if (confirm('Are you sure you want to delete this comment?')) {
+      try {
+          await store.activeProvider.deleteComment(comment.id);
+          store.removeRemoteComment(comment.id);
+          annotationVersion.value++;
+      } catch (err) {
+          alert(`Delete failed: ${(err as Error).message}`);
+      }
   }
+};
+
+const startEdit = (comment: any) => {
+    editingCommentId.value = comment.id;
+    editingBody.value = comment.body;
+    annotationVersion.value++;
+};
+
+const cancelEdit = () => {
+    editingCommentId.value = null;
+    editingBody.value = '';
+    annotationVersion.value++;
+};
+
+const saveEdit = async (comment: any) => {
+    if (!store.activeProvider) return;
+    const newBody = editingBody.value.trim();
+    if (!newBody || newBody === comment.body) {
+        cancelEdit();
+        return;
+    }
+
+    try {
+        await store.activeProvider.editComment(comment.id, newBody);
+
+        // Optimistically update
+        const c = store.remoteComments.find(rc => rc.id === comment.id);
+        if (c) c.body = newBody;
+
+        cancelEdit();
+    } catch (err) {
+        alert(`Edit failed: ${(err as Error).message}`);
+    }
 };
 
 const sendBatchComments = async () => {
@@ -517,7 +565,7 @@ const createThreadElement = (comments: any[]): HTMLElement => {
   // Group comments by their thread ID (discussion_id for GitLab, or chaining for GitHub)
   // For simplicity here, we display them in chronological order as a single thread
   // since they are already filtered by line number.
-  
+
   comments.forEach((comment, index) => {
     const commentEl = document.createElement('div');
     commentEl.className = 'comment-item';
@@ -531,9 +579,10 @@ const createThreadElement = (comments: any[]): HTMLElement => {
     commentEl.appendChild(avatar);
 
     const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'comment-content';    const header = document.createElement('div');
+    contentWrapper.className = 'comment-content';
+    const header = document.createElement('div');
     header.className = 'comment-header';
-    
+
     const authorName = document.createElement('span');
     authorName.className = 'comment-author';
     authorName.textContent = comment.author;
@@ -543,22 +592,20 @@ const createThreadElement = (comments: any[]): HTMLElement => {
     time.className = 'comment-time';
     time.textContent = new Date(comment.created_at).toLocaleString();
     header.appendChild(time);
+     if (!comment.is_batched) {
+        // Only show actions for non-batched comments (though we could support batch edit too)
+        const isAuthor = store.currentUser && (comment.author_id === store.currentUser.id || comment.author === store.currentUser.username);
 
-    if (comment.is_batched) {
-        const badge = document.createElement('span');
-        badge.className = 'comment-badge-batched';
-        badge.textContent = 'PENDING';
-        header.appendChild(badge);
+        if (isAuthor) {
+            const editBtn = document.createElement('button');
+            editBtn.className = 'comment-remove-btn';
+            editBtn.innerHTML = PENCIL_ICON;
+            editBtn.title = 'Edit comment';
+            editBtn.style.marginRight = '4px';
+            editBtn.addEventListener('click', () => startEdit(comment));
+            header.appendChild(editBtn);
+        }
 
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'comment-remove-btn';
-        removeBtn.textContent = '✕';
-        removeBtn.addEventListener('click', () => {
-            store.removeBatchedComment(comment.id);
-            annotationVersion.value++;
-        });
-        header.appendChild(removeBtn);
-    } else {
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'comment-remove-btn';
         deleteBtn.innerHTML = TRASH_ICON;
@@ -569,43 +616,88 @@ const createThreadElement = (comments: any[]): HTMLElement => {
 
     contentWrapper.appendChild(header);
 
-    const body = document.createElement('div');
-    body.className = 'comment-body markdown-body';
-    // Render markdown and sanitize
-    const rawHtml = marked.parse(comment.body) as string;
-    body.innerHTML = DOMPurify.sanitize(rawHtml);
-    contentWrapper.appendChild(body);
+    if (editingCommentId.value === comment.id) {
+        const editContainer = document.createElement('div');
+        editContainer.className = 'reply-input-wrapper';
+        editContainer.style.marginTop = '4px';
+        editContainer.style.paddingTop = '4px';
+        editContainer.style.borderTop = 'none';
 
-    // Reactions bar
-    const reactionRow = document.createElement('div');
-    reactionRow.className = 'reaction-bar';
-    (comment.reactions || []).forEach((r: any) => {
-        const rel = document.createElement('div');
-        rel.className = 'reaction-item';
-        rel.textContent = `${r.name} ${r.count}`;
-        rel.addEventListener('click', () => addReaction(comment, r.name));
-        reactionRow.appendChild(rel);
-    });
-    const addReactBtn = document.createElement('button');
-    addReactBtn.className = 'reaction-add-btn';
-    addReactBtn.textContent = '+';
-    addReactBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        // Toggle picker popup logic for reactions
-        const pickerPopup = createEmojiPicker((emoji) => {
-            addReaction(comment, emoji);
+        const textarea = document.createElement('textarea');
+        textarea.className = 'reply-textarea';
+        textarea.value = editingBody.value;
+        textarea.addEventListener('input', (e: any) => {
+            editingBody.value = e.target.value;
         });
-        pickerPopup.className = 'emoji-picker-container';
-        pickerPopup.style.position = 'absolute';
-        pickerPopup.style.bottom = '100%';
-        pickerPopup.style.left = '0';
-        
-        // Slightly hacky: just add it and trigger click
-        addReactBtn.parentElement?.appendChild(pickerPopup);
-        pickerPopup.querySelector('button')?.click();
-    });
-    reactionRow.appendChild(addReactBtn);
-    contentWrapper.appendChild(reactionRow);
+        editContainer.appendChild(textarea);
+
+        const actions = document.createElement('div');
+        actions.className = 'reply-actions';
+        actions.style.marginTop = '4px';
+
+        const leftActions = document.createElement('div');
+        actions.appendChild(leftActions); // Placeholder for emoji if needed
+
+        const rightActions = document.createElement('div');
+        rightActions.style.display = 'flex';
+        rightActions.style.gap = '8px';
+
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'inline-btn inline-btn-primary';
+        saveBtn.textContent = 'Save';
+        saveBtn.addEventListener('click', () => saveEdit(comment));
+        rightActions.appendChild(saveBtn);
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'inline-btn inline-btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', cancelEdit);
+        rightActions.appendChild(cancelBtn);
+
+        actions.appendChild(rightActions);
+        editContainer.appendChild(actions);
+        contentWrapper.appendChild(editContainer);
+    } else {
+        const body = document.createElement('div');
+        body.className = 'comment-body markdown-body';
+        // Render markdown and sanitize
+        const rawHtml = marked.parse(comment.body) as string;
+        body.innerHTML = DOMPurify.sanitize(rawHtml);
+        contentWrapper.appendChild(body);
+
+        // Reactions bar
+        const reactionRow = document.createElement('div');
+        reactionRow.className = 'reaction-bar';
+        (comment.reactions || []).forEach((r: any) => {
+            const rel = document.createElement('div');
+            rel.className = 'reaction-item';
+            rel.textContent = `${r.name} ${r.count}`;
+            if (r.users && r.users.length > 0) {
+                rel.title = r.users.join(', ');
+            }
+            rel.addEventListener('click', () => addReaction(comment, r.name));
+            reactionRow.appendChild(rel);
+        });
+        const addReactBtn = document.createElement('button');
+        addReactBtn.className = 'reaction-add-btn';
+        addReactBtn.textContent = '+';
+        addReactBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const picker = createEmojiPicker((emojiChar) => {
+                addReaction(comment, emojiChar);
+            });
+            picker.style.position = 'absolute';
+            // Simple positioning logic
+            const rect = addReactBtn.getBoundingClientRect();
+            picker.style.top = `-100px`;
+            picker.style.left = `0`;
+            addReactBtn.parentElement?.appendChild(picker);
+            const popup = picker.querySelector('.emoji-popup') as HTMLElement;
+            if (popup) popup.style.display = 'grid';
+        });
+        reactionRow.appendChild(addReactBtn);
+        contentWrapper.appendChild(reactionRow);
+    }
 
     commentEl.appendChild(contentWrapper);
     container.appendChild(commentEl);
@@ -726,19 +818,28 @@ const lineAnnotations = computed(() => {
     <div class="sidebar">
       <div class="sidebar-header">
         <h3>Files</h3>
-        <div class="toggles">
-          <label class="toggle">
-            <input type="checkbox" v-model="showAllFiles" />
-            Show all files
-          </label>
-          <label class="toggle" v-if="store.codeownersRules.length > 0">
-            <input type="checkbox" v-model="showOnlyMyFiles" />
-            Only my files (CODEOWNERS)
-          </label>
-          <label class="toggle">
-            <input type="checkbox" v-model="useTreeView" />
-            Tree view
-          </label>
+        <div class="sidebar-filters">
+          <div class="filter-group">
+            <span class="filter-label">Show all files</span>
+            <label class="switch">
+              <input type="checkbox" v-model="showAllFiles" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="filter-group" v-if="store.codeownersRules.length > 0">
+            <span class="filter-label">Only my files</span>
+            <label class="switch">
+              <input type="checkbox" v-model="showOnlyMyFiles" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">Tree view</span>
+            <label class="switch">
+              <input type="checkbox" v-model="useTreeView" />
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -860,6 +961,67 @@ const lineAnnotations = computed(() => {
   align-items: center;
   gap: 4px;
 }
+.sidebar-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+.filter-group {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.filter-label {
+  font-size: 0.8rem;
+  color: #8b949e;
+}
+
+/* Toggle Switch Styling */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #30363d;
+  transition: .4s;
+  border-radius: 34px;
+}
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: #8b949e;
+  transition: .4s;
+  border-radius: 50%;
+}
+input:checked + .slider {
+  background-color: #238636;
+}
+input:checked + .slider:before {
+  transform: translateX(14px);
+  background-color: #fff;
+}
+input:focus + .slider {
+  box-shadow: 0 0 1px #238636;
+}
+
 .file-list {
   list-style: none;
   padding: 0;
@@ -1087,20 +1249,20 @@ const lineAnnotations = computed(() => {
 .comment-thread-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 4px;
+  padding: 4px 12px;
   margin: 4px 8px;
-  background: #161b22;
+  background: #1c2128;
   border: 1px solid #30363d;
   border-radius: 6px;
 }
 .comment-item {
   display: flex;
-  gap: 12px;
-  padding: 8px 0;
+  gap: 8px;
+  padding: 4px 0;
 }
 .comment-item:not(:last-child) {
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #30363d;
 }
 .comment-reply {
   margin-left: 24px;
@@ -1108,8 +1270,8 @@ const lineAnnotations = computed(() => {
   padding-left: 12px;
 }
 .comment-avatar {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: #30363d;
   flex-shrink: 0;
@@ -1122,7 +1284,7 @@ const lineAnnotations = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 .comment-author {
   font-weight: 600;
@@ -1158,9 +1320,8 @@ const lineAnnotations = computed(() => {
 
 /* Reply Input Styling */
 .reply-input-wrapper {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #30363d;
+  margin-top: 8px;
+  padding-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
