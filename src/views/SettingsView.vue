@@ -10,36 +10,44 @@ const gitlabToken = ref('');
 const githubToken = ref('');
 
 const saveTokens = async () => {
-  let gitlabSaved = true;
-  let githubSaved = true;
-
+  console.log('[Settings] Starting saveTokens...');
   if (gitlabToken.value) {
+    console.log('[Settings] Saving GitLab PAT...');
     const res = await window.electronAPI.setSecret('gitlab_pat', gitlabToken.value);
-    gitlabSaved = res.success;
+    console.log('[Settings] setSecret gitlab_pat result:', res);
+    if (res.success) {
+      localStorage.removeItem('gitlab_pat');
+    } else {
+      console.warn('[Settings] Secure storage failed for GitLab PAT, saving to localStorage instead.');
+      localStorage.setItem('gitlab_pat', gitlabToken.value);
+    }
   }
   if (githubToken.value) {
+    console.log('[Settings] Saving GitHub PAT...');
     const res = await window.electronAPI.setSecret('github_pat', githubToken.value);
-    githubSaved = res.success;
+    console.log('[Settings] setSecret github_pat result:', res);
+    if (res.success) {
+      localStorage.removeItem('github_pat');
+    } else {
+      console.warn('[Settings] Secure storage failed for GitHub PAT, saving to localStorage instead.');
+      localStorage.setItem('github_pat', githubToken.value);
+    }
   }
   
-  // Clear any legacy plain text tokens only if secure storage actually worked
-  if (gitlabSaved) {
-    localStorage.removeItem('gitlab_pat');
-  }
-  if (githubSaved) {
-    localStorage.removeItem('github_pat');
-  }
-  
+  console.log('[Settings] Save complete, redirecting to home...');
   router.push('/');
 };
 
 // load tokens on mount
 onMounted(async () => {
+  console.log('[Settings] App mounted, checking for tokens...'); // Added log
   await store.initializeStorageStatus();
   
   // 1. Try to load from secure storage
   const glRes = await window.electronAPI.getSecret('gitlab_pat');
+  console.log('[Settings] getSecret gitlab_pat result:', glRes); // Added log
   const ghRes = await window.electronAPI.getSecret('github_pat');
+  console.log('[Settings] getSecret github_pat result:', ghRes); // Added log
   
   if (glRes.success && glRes.value) {
     gitlabToken.value = glRes.value;
@@ -47,7 +55,8 @@ onMounted(async () => {
     // Migration: Check if they exist in localStorage
     const legacyGl = localStorage.getItem('gitlab_pat');
     if (legacyGl) {
-      console.warn('[Storage] Found legacy GitLab PAT in localStorage. It will be moved to secure storage upon clicking Save.');
+      console.log('[Settings] Found legacy GitLab PAT in localStorage.'); // Added log
+      console.warn('[Settings] Found legacy GitLab PAT in localStorage. It will be moved to secure storage upon clicking Save.');
       gitlabToken.value = legacyGl;
     }
   }

@@ -14,16 +14,30 @@ const errorMsg = ref('');
 const recentMrs = ref<Array<{ url: string, title: string, project: string }>>([]);
 
 onMounted(async () => {
+  console.log('[Init] App mounted, checking for tokens...');
   await reviewStore.initializeStorageStatus();
+  
   const glRes = await window.electronAPI.getSecret('gitlab_pat');
+  console.log('[Init] getSecret gitlab_pat result:', glRes);
+  
   const ghRes = await window.electronAPI.getSecret('github_pat');
+  console.log('[Init] getSecret github_pat result:', ghRes);
+  
+  const legacyGl = localStorage.getItem('gitlab_pat');
+  const legacyGh = localStorage.getItem('github_pat');
+  if (legacyGl) console.log('[Init] Found legacy gitlab_pat in localStorage');
+  if (legacyGh) console.log('[Init] Found legacy github_pat in localStorage');
+
   const hasAnyToken = (glRes.success && glRes.value) || 
                        (ghRes.success && ghRes.value) ||
-                       localStorage.getItem('gitlab_pat') || 
-                       localStorage.getItem('github_pat');
+                       legacyGl || 
+                       legacyGh;
                        
   if (!hasAnyToken) {
+    console.warn('[Init] No tokens found in secure storage or localStorage, redirecting to /settings');
     router.push('/settings');
+  } else {
+    console.log('[Init] Tokens found, ready to review.');
   }
   loadHistory();
 });
