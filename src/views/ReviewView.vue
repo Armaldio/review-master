@@ -1006,6 +1006,7 @@ const lineAnnotations = computed(() => {
           </div>
           <PierreDiff
             v-else-if="parsedFileDiff"
+            :key="`${file?.new_path}-${viewMode}`"
             :fileDiff="parsedFileDiff"
             :options="diffOptions"
             :lineAnnotations="lineAnnotations"

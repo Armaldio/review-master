@@ -45,6 +45,8 @@ onMounted(() => {
 watch(
   () => props.options,
   () => {
+    // Other options like wordWrap will still trigger an update here.
+    // If the viewMode changes, the key in the parent will remount us instead.
     renderDiff();
   },
   { deep: true },
