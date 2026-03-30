@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { parse, matchFile } from 'codeowners-utils';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -356,6 +357,44 @@ app.on('ready', () => {
       success: available,
       message: available ? 'Secure storage available' : 'Secure storage is not available on this system'
     };
+  });
+
+  ipcMain.handle('open-external', async (event, url: string) => {
+    await shell.openExternal(url);
+  });
+
+  ipcMain.handle('parse-codeowners', async (event, content: string) => {
+    try {
+      return parse(content);
+    } catch (e) {
+      console.error('Failed to parse CODEOWNERS:', e);
+      return [];
+    }
+  });
+
+  ipcMain.handle('match-codeowners', async (event, { filePath, rules }) => {
+    try {
+      return matchFile(filePath, rules);
+    } catch (e) {
+      console.error('Failed to match CODEOWNERS rule:', e);
+      return null;
+    }
+  });
+
+  ipcMain.handle('match-codeowners-bulk', async (event, { filePaths, rules }) => {
+    try {
+      const results: Record<string, string[]> = {};
+      for (const filePath of filePaths) {
+        const match = matchFile(filePath, rules);
+        if (match) {
+          results[filePath] = match.owners;
+        }
+      }
+      return results;
+    } catch (e) {
+      console.error('Failed to bulk match CODEOWNERS rules:', e);
+      return {};
+    }
   });
 
   initBinaries();

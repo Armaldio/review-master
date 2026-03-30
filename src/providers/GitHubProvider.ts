@@ -51,6 +51,13 @@ export class GitHubProvider extends BaseProvider {
         name: userData.name,
         avatar_url: userData.avatar_url
     };
+    
+    // Fetch User Teams
+    const teamsRes = await fetch(`${apiBase}/user/teams`, { headers });
+    if (teamsRes.ok) {
+        const teams = await teamsRes.json();
+        this.currentUser.groups = teams.map((t: any) => `@${t.organization.login}/${t.slug}`);
+    }
 
     // Fetch CODEOWNERS via API
     const codeownersPaths = [

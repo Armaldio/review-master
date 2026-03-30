@@ -2,11 +2,11 @@
 import { ref, computed, watch } from "vue";
 import type { DiffLineAnnotation, AnnotationSide, SelectedLineRange } from "@pierre/diffs";
 import { useRouter } from "vue-router";
-import { useReviewStore } from "../store";
+import { useReviewStore, getLanguage } from "../store";
 import PierreDiff from "../components/PierreDiff.vue";
 import FileTreeItem from "../components/FileTreeItem.vue";
 import type { FileNode } from "../components/FileTreeItem.vue";
-import { parsePatchFiles } from "@pierre/diffs";
+import { parsePatchFiles, parseDiffFromFile } from "@pierre/diffs";
 import ignore from "ignore";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -22,6 +22,9 @@ const useTreeView = ref(true);
 const currentTab = ref<"diff" | "semantic" | "ast">("diff");
 
 const isSubmitting = ref(false);
+const exitReview = () => {
+  router.push("/");
+};
 
 // Inline comment state
 const inlineCommentLocation = ref<{
@@ -52,19 +55,10 @@ const displayedFiles = computed(() => {
     const myUsername = `@${store.currentUser.username}`;
 
     files = files.filter((filePath) => {
-      // Find the last matching rule in CODEOWNERS (last match wins in GitLab)
-      let isOwner = false;
-      for (let i = store.codeownersRules.length - 1; i >= 0; i--) {
-        const rule = store.codeownersRules[i];
-
-        // Simple pattern matching using 'ignore' library
-        const ig = ignore().add(rule.pattern);
-        if (ig.ignores(filePath)) {
-          isOwner = rule.owners.includes(myUsername);
-          break; // Found the matching rule
-        }
-      }
-      return isOwner;
+      const owners = store.fileOwners[filePath];
+      if (!owners) return false;
+      return owners.includes(myUsername) || 
+             (store.currentUser.groups && owners.some(o => store.currentUser.groups!.includes(o)));
     });
   }
 
@@ -134,10 +128,28 @@ const file = computed(() => {
 });
 
 const parsedFileDiff = computed(() => {
-  if (!file.value || !file.value.diff) return null;
+  if (!file.value) return null;
   const f = file.value;
-  let patch = `diff --git a/${f.old_path} b/${f.new_path}\n`;
 
+  // Use full contents for better metadata and expansion if available
+  if (store.fileContents[f.new_path]) {
+    const contents = store.fileContents[f.new_path];
+    try {
+      const language = getLanguage(f.new_path).toLowerCase();
+      const metadata = parseDiffFromFile(
+        { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
+        { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
+        { context: 3 }
+      );
+      return metadata;
+    } catch (e) {
+      console.warn("Failed to generate metadata from full contents, falling back to patch", e);
+    }
+  }
+
+  // Fallback to patch-based diff (partial)
+  if (!f.diff) return null;
+  let patch = `diff --git a/${f.old_path} b/${f.new_path}\n`;
   if (f.new_file) patch += `new file mode 100644\n`;
   if (f.deleted_file) patch += `deleted file mode 100644\n`;
 
@@ -532,32 +544,21 @@ const createRemoteCommentElement = (comment: any): HTMLElement => {
 };
 
 // --- Diff options with gutter utility ---
-const getLanguage = (filePath: string) => {
-  const ext = filePath.split('.').pop()?.toLowerCase();
-  if (!ext) return 'text';
-  const map: Record<string, string> = {
-    'vue': 'vue',
-    'ts': 'typescript',
-    'tsx': 'tsx',
-    'js': 'javascript',
-    'jsx': 'jsx',
-    'css': 'css',
-    'html': 'html',
-    'json': 'json',
-    'md': 'markdown',
-    'py': 'python',
-    'go': 'go',
-    'rs': 'rust'
-  };
-  return map[ext] || ext;
-};
+// Removed getLanguage - now imported from store
 
-const getSemanticDiffOptions = (change: any) => ({
-  diffStyle: 'unified' as const, // For space saving
-  overflow: 'wrap' as const,
+const baseDiffOptions = computed(() => ({
+  diffStyle: viewMode.value ?? 'split',
+  overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
+  expandUnchanged: true,
+  collapsedContextThreshold: 3,
+}));
+
+const getSemanticDiffOptions = (change: any, overrideLanguage?: string) => ({
+  ...baseDiffOptions.value,
+  expandUnchanged: false, // Fragments should not move/show markers
   enableGutterUtility: false, // No comments on semantic cards yet
   enableLineSelection: false,
-  language: getLanguage(change.filePath),
+  language: (overrideLanguage || getLanguage(change.filePath)).toLowerCase(),
 });
 
 const getFileContentFromChange = (contents: string, filePath: string) => ({
@@ -577,8 +578,7 @@ const getAstContent = (items: any[], side: 'lhs' | 'rhs') => {
 };
 
 const diffOptions = computed(() => ({
-  diffStyle: viewMode.value ?? 'split',
-  overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
+  ...baseDiffOptions.value,
   enableGutterUtility: true,
   enableLineSelection: true,
   language: file.value ? getLanguage(file.value.new_path) : 'text',
@@ -996,6 +996,9 @@ const lineAnnotations = computed(() => {
           <button class="btn-primary" @click="markAsViewed">
             Mark as Viewed
           </button>
+          <button class="btn-secondary" @click="exitReview">
+            Exit Review
+          </button>
         </div>
       </div>
 
@@ -1035,6 +1038,7 @@ const lineAnnotations = computed(() => {
                   :options="getSemanticDiffOptions(change)"
                   :oldFile="getFileContentFromChange(change.beforeContent, change.filePath)"
                   :newFile="getFileContentFromChange(change.afterContent, change.filePath)"
+                  :fileDiff="change.diffMetadata"
                 />
               </div>
             </div>
@@ -1058,9 +1062,10 @@ const lineAnnotations = computed(() => {
                <div class="hunk-header">Region {{ Number(idx) + 1 }}</div>
                <div class="hunk-diff-viewer">
                   <PierreDiff
-                    :options="getSemanticDiffOptions({ filePath: file.new_path })"
-                    :oldFile="getFileContentFromChange(getAstContent(chunk, 'lhs'), file.old_path)"
-                    :newFile="getFileContentFromChange(getAstContent(chunk, 'rhs'), file.new_path)"
+                    :options="getSemanticDiffOptions({ filePath: file.new_path }, store.astDiffs[file.new_path].language)"
+                    :oldFile="getFileContentFromChange(chunk.reconstructedLhs, file.old_path)"
+                    :newFile="getFileContentFromChange(chunk.reconstructedRhs, file.new_path)"
+                    :fileDiff="chunk.diffMetadata"
                   />
                </div>
             </div>
@@ -1401,7 +1406,8 @@ input:focus + .slider {
   background: transparent !important;
 }
 
-.entity-diff-viewer :deep(diffs-container) {
+.entity-diff-viewer :deep(diffs-container),
+.hunk-diff-viewer :deep(diffs-container) {
   font-size: 12px !important;
 }
 

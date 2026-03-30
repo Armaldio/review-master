@@ -9,6 +9,10 @@ const store = useReviewStore();
 const gitlabToken = ref('');
 const githubToken = ref('');
 
+const openExternal = (url: string) => {
+  window.electronAPI.openExternal(url);
+};
+
 const saveTokens = async () => {
   console.log('[Settings] Starting saveTokens...');
   if (gitlabToken.value) {
@@ -79,11 +83,17 @@ onMounted(async () => {
     <SecurityBanner />
     <h2>Settings</h2>
     <div class="form-group">
-      <label for="gitlab-token">GitLab Personal Access Token</label>
+      <label for="gitlab-token">
+        GitLab Personal Access Token
+        <a href="#" @click.prevent="openExternal('https://gitlab.com/-/profile/personal_access_tokens?name=ReviewMaster&scopes=api,read_user')" class="gen-link">Generate</a>
+      </label>
       <input id="gitlab-token" v-model="gitlabToken" type="password" placeholder="glpat-..." />
     </div>
     <div class="form-group">
-      <label for="github-token">GitHub Personal Access Token</label>
+      <label for="github-token">
+        GitHub Personal Access Token
+        <a href="#" @click.prevent="openExternal('https://github.com/settings/tokens/new?scopes=repo,read:org,read:user,user:email')" class="gen-link">Generate</a>
+      </label>
       <input id="github-token" v-model="githubToken" type="password" placeholder="ghp_..." />
     </div>
     <p class="hint">At least one token is required.</p>
@@ -101,10 +111,20 @@ onMounted(async () => {
   margin-bottom: 1rem;
 }
 label {
-  display: block;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 0.25rem;
   font-size: 0.9rem;
   color: #ccc;
+}
+.gen-link {
+  color: #58a6ff;
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+.gen-link:hover {
+  text-decoration: underline;
 }
 input {
   width: 100%;

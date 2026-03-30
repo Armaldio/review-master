@@ -14,4 +14,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runSem: (payload: any) => ipcRenderer.invoke('run-sem', payload),
   runDifftastic: (payload: any) => ipcRenderer.invoke('run-difftastic', payload),
   checkBinaries: () => ipcRenderer.invoke('check-binaries'),
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+  parseCodeowners: (content: string) => ipcRenderer.invoke('parse-codeowners', content),
+  matchCodeowners: (filePath: string, rules: any[]) => ipcRenderer.invoke('match-codeowners', { filePath, rules }),
+  matchCodeownersBulk: (filePaths: string[], rules: any[]) => ipcRenderer.invoke('match-codeowners-bulk', { filePaths, rules }),
 });

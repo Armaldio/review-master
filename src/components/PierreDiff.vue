@@ -71,6 +71,7 @@ onBeforeUnmount(() => {
   <div
     ref="wrapperRef"
     class="diff-viewer-wrapper w-full bg-white dark:bg-gray-950 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-800 transition-colors p-6"
+    :class="{ 'word-wrap': options.overflow === 'wrap' }"
   >
     <diffs-container
       ref="containerRef"
@@ -86,6 +87,12 @@ diffs-container {
     "Courier New", monospace;
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre;
+}
+
+.diff-viewer-wrapper.word-wrap diffs-container {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .diff-viewer-wrapper {

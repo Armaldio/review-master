@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@pierre/diffs": "^1.1.3",
+    "codeowners-utils": "^1.0.2",
     "dompurify": "^3.3.3",
     "electron-squirrel-startup": "^1.0.1",
     "ignore": "^7.0.5",

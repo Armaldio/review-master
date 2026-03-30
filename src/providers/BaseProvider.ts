@@ -26,24 +26,10 @@ export abstract class BaseProvider {
   }
 
   /**
-   * Universal CODEOWNERS parser
+   * Universal CODEOWNERS parser using 'codeowners-utils' (via IPC)
    */
-  public parseCodeowners(content: string): CodeownerRule[] {
-    const lines = content.split('\n');
-    const rules: CodeownerRule[] = [];
-
-    for (let line of lines) {
-      line = line.trim();
-      if (!line || line.startsWith('#')) continue;
-
-      const parts = line.split(/\s+/);
-      if (parts.length >= 2) {
-        const pattern = parts[0];
-        const owners = parts.slice(1);
-        rules.push({ pattern, owners });
-      }
-    }
-    return rules;
+  public async parseCodeowners(content: string): Promise<CodeownerRule[]> {
+    return await window.electronAPI.parseCodeowners(content);
   }
 
   // --- Abstract API Methods ---

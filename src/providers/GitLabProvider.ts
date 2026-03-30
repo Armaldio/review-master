@@ -45,6 +45,17 @@ export class GitLabProvider extends BaseProvider {
     if (!userRes.ok) throw new Error('Failed to fetch user info');
     this.currentUser = await userRes.json();
 
+    // Fetch User Groups
+    const groupsRes = await fetch(`${host}/api/v4/groups?all_available=false&min_access_level=10`, {
+      headers: { 'PRIVATE-TOKEN': pat }
+    });
+    if (groupsRes.ok) {
+      const groups = await groupsRes.json();
+      if (this.currentUser) {
+        this.currentUser.groups = groups.map((g: any) => `@${g.full_path}`);
+      }
+    }
+
     // Fetch CODEOWNERS via API
     const codeownersPaths = [
       'CODEOWNERS',

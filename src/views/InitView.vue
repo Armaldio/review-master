@@ -98,6 +98,15 @@ const initializeReview = async () => {
     reviewStore.remoteComments = provider.remoteComments;
     reviewStore.codeownersRules = provider.codeownersRules;
 
+    // Cache file ownership for all changed files
+    if (reviewStore.codeownersRules.length > 0) {
+      console.log(`[Init] Bulk caching ownership for ${reviewStore.diffs.length} files...`);
+      const filePaths = reviewStore.diffs.map(f => f.new_path);
+      reviewStore.fileOwners = await window.electronAPI.matchCodeownersBulk(filePaths, reviewStore.codeownersRules);
+    } else {
+      reviewStore.fileOwners = {};
+    }
+
     saveToHistory(mrUrl.value, provider.mrData?.title || '', parsed.projectPath);
     
     if (provider.diffs.length > 0) {
@@ -112,23 +121,6 @@ const initializeReview = async () => {
   }
 };
 
-const parseCodeowners = (content: string) => {
-  const lines = content.split('\n');
-  const rules: Array<{ pattern: string, owners: string[] }> = [];
-
-  for (let line of lines) {
-    line = line.trim();
-    if (!line || line.startsWith('#')) continue;
-
-    const parts = line.split(/\s+/);
-    if (parts.length >= 2) {
-      const pattern = parts[0];
-      const owners = parts.slice(1);
-      rules.push({ pattern, owners });
-    }
-  }
-  return rules;
-};
 </script>
 
 <template>

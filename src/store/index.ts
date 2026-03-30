@@ -1,6 +1,29 @@
 import { defineStore } from 'pinia';
-import { ref, shallowRef } from 'vue';
+import { ref, shallowRef, computed } from 'vue';
 import type { BaseProvider } from '../providers/BaseProvider';
+import { parseDiffFromFile } from '@pierre/diffs';
+
+export const getLanguage = (filePath: string) => {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  if (!ext) return 'text';
+  const map: Record<string, string> = {
+    'vue': 'vue',
+    'ts': 'typescript',
+    'tsx': 'typescript',
+    'js': 'javascript',
+    'mjs': 'javascript',
+    'cjs': 'javascript',
+    'jsx': 'javascript',
+    'css': 'css',
+    'html': 'html',
+    'json': 'json',
+    'md': 'markdown',
+    'py': 'python',
+    'go': 'go',
+    'rs': 'rust'
+  };
+  return map[ext] || ext;
+};
 
 export const useReviewStore = defineStore('review', () => {
   const activeProvider = shallowRef<BaseProvider | null>(null);
@@ -13,6 +36,7 @@ export const useReviewStore = defineStore('review', () => {
   const platform = ref<'gitlab' | 'github'>('gitlab');
   const remoteComments = ref<any[]>([]);
   const codeownersRules = ref<Array<{ pattern: string, owners: string[] }>>([]);
+  const fileOwners = ref<Record<string, string[]>>({});
   const isSecureStorageAvailable = ref<boolean>(true);
   const secureStorageErrorMessage = ref<string | null>(null);
 
@@ -91,9 +115,26 @@ export const useReviewStore = defineStore('review', () => {
       };
 
       const res = await window.electronAPI.runSem(payload);
-      if (res.success) {
-        console.log(`[Store] Semantic diff result for ${file.new_path}:`, res.data);
-        semanticDiffs.value[file.new_path] = res.data;
+      if (res.success && res.data) {
+        const result = Array.isArray(res.data) ? res.data[0] : res.data;
+        if (!result) throw new Error('Empty semantic diff result');
+
+        if (result.entities) {
+          for (const entity of result.entities) {
+            try {
+              // Normalize language for highlighter
+              const lang = (result.language || getLanguage(file.new_path)).toLowerCase();
+              entity.diffMetadata = parseDiffFromFile(
+                { name: entity.filePath || file.new_path, contents: entity.beforeContent || "", lang },
+                { name: entity.filePath || file.new_path, contents: entity.afterContent || "", lang }
+              );
+            } catch (e) {
+              console.warn('[Store] Failed to generate semantic metadata for entity:', entity.entityName, e);
+            }
+          }
+        }
+        console.log(`[Store] Semantic diff result for ${file.new_path}:`, result);
+        semanticDiffs.value[file.new_path] = result;
       } else {
         console.error('[Store] Semantic diff failed:', res.error);
       }
@@ -119,9 +160,47 @@ export const useReviewStore = defineStore('review', () => {
       };
 
       const res = await window.electronAPI.runDifftastic(payload);
-      if (res.success) {
-        console.log(`[Store] AST diff result for ${file.new_path}:`, res.data);
-        astDiffs.value[file.new_path] = res.data;
+      if (res.success && res.data) {
+        const result = Array.isArray(res.data) ? res.data[0] : res.data;
+        if (!result) throw new Error('Empty AST diff result');
+
+        if (result.chunks) {
+          const lang = (result.language || getLanguage(file.new_path)).toLowerCase();
+          for (const chunk of result.chunks) {
+            // Reconstruct LHS and RHS for the chunk to generate metadata
+            // Group changes by line number if necessary, but here we assume each item is a line
+            const lhsContent = chunk
+              .map((item: any) => {
+                const data = item.lhs;
+                if (!data || !data.changes) return null;
+                return data.changes.map((c: any) => c.content).join('');
+              })
+              .filter((c: any) => c !== null)
+              .join('\n');
+
+            const rhsContent = chunk
+              .map((item: any) => {
+                const data = item.rhs;
+                if (!data || !data.changes) return null;
+                return data.changes.map((c: any) => c.content).join('');
+              })
+              .filter((c: any) => c !== null)
+              .join('\n');
+
+            try {
+              chunk.diffMetadata = parseDiffFromFile(
+                { name: file.old_path, contents: lhsContent, lang },
+                { name: file.new_path, contents: rhsContent, lang }
+              );
+              chunk.reconstructedLhs = lhsContent;
+              chunk.reconstructedRhs = rhsContent;
+            } catch (e) {
+              console.warn('[Store] Failed to generate AST metadata for chunk', e);
+            }
+          }
+        }
+        console.log(`[Store] AST diff result for ${file.new_path}:`, result);
+        astDiffs.value[file.new_path] = result;
       } else {
         console.error('[Store] AST diff failed:', res.error);
       }
@@ -155,6 +234,7 @@ export const useReviewStore = defineStore('review', () => {
     platform,
     remoteComments,
     codeownersRules,
+    fileOwners,
     isSecureStorageAvailable,
     secureStorageErrorMessage,
     initializeStorageStatus,
