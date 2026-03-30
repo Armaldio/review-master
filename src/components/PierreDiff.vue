@@ -35,7 +35,6 @@ const renderDiff = () => {
     newFile: props.newFile,
     fileDiff: props.fileDiff,
     lineAnnotations: props.lineAnnotations,
-    forceRender: true,
   });
 };
 

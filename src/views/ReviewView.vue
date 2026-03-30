@@ -128,52 +128,25 @@ const file = computed(() => {
 });
 
 const parsedFileDiff = computed(() => {
-  if (!file.value) return null;
   const f = file.value;
+  if (!f) return null;
 
-  // Use full contents for better metadata and expansion if available
-  if (store.fileContents[f.new_path]) {
-    const contents = store.fileContents[f.new_path];
+  // We only render once we have the full file content (Simplified + Stable)
+  const contents = store.fileContents[f.new_path];
+  if (contents) {
     try {
       const language = getLanguage(f.new_path).toLowerCase();
-      const metadata = parseDiffFromFile(
+      return parseDiffFromFile(
         { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
         { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
         { context: 3 }
       );
-      return metadata;
     } catch (e) {
-      console.warn("Failed to generate metadata from full contents, falling back to patch", e);
+      console.warn("Failed to generate metadata from full contents", e);
     }
   }
 
-  // Fallback to patch-based diff (partial)
-  if (!f.diff) return null;
-  let patch = `diff --git a/${f.old_path} b/${f.new_path}\n`;
-  if (f.new_file) patch += `new file mode 100644\n`;
-  if (f.deleted_file) patch += `deleted file mode 100644\n`;
-
-  if (f.new_file) {
-    patch += `--- /dev/null\n`;
-  } else {
-    patch += `--- a/${f.old_path}\n`;
-  }
-
-  if (f.deleted_file) {
-    patch += `+++ /dev/null\n`;
-  } else {
-    patch += `+++ b/${f.new_path}\n`;
-  }
-
-  patch += f.diff;
-
-  try {
-    const parsed = parsePatchFiles(patch);
-    return parsed[0]?.files[0] || null;
-  } catch (e) {
-    console.error("Failed to parse diff", e);
-    return null;
-  }
+  return null;
 });
 
 const TRASH_ICON = `
@@ -195,19 +168,39 @@ const PENCIL_ICON = `
 const selectFile = async (path: string) => {
   store.selectFile(path);
   inlineCommentLocation.value = null;
-  
-  // Fetch full contents for "expand" context and reuse in semantic tab
-  if (file.value) {
-    store.fetchFileContents(file.value);
-  }
-
-  if (currentTab.value === "semantic") {
-    store.fetchSemanticDiff(file.value);
-  }
-  if (currentTab.value === "ast") {
-    store.fetchAstDiff(file.value);
-  }
 };
+
+watch(
+  () => store.selectedFile,
+  (newFile) => {
+    if (newFile) {
+      // Find the file metadata if not already available
+      const f = store.diffs.find((d) => d.new_path === newFile);
+      if (f) {
+        store.fetchFileContents(f);
+        
+        if (currentTab.value === "semantic") {
+          store.fetchSemanticDiff(f);
+        }
+        if (currentTab.value === "ast") {
+          store.fetchAstDiff(f);
+        }
+      }
+    }
+  },
+  { immediate: true }
+);
+
+// Auto-select first file if none selected
+watch(
+  () => modifiedFiles.value,
+  (files) => {
+    if (!store.selectedFile && files && files.length > 0) {
+      store.selectFile(files[0]);
+    }
+  },
+  { immediate: true }
+);
 
 watch(currentTab, (newTab) => {
   if (newTab === "semantic" && file.value) {
@@ -1004,8 +997,12 @@ const lineAnnotations = computed(() => {
 
       <div class="diff-area">
         <template v-if="currentTab === 'diff'">
+          <div v-if="file && !parsedFileDiff" class="loading-state">
+            <div class="spinner"></div>
+            Analyzing diff...
+          </div>
           <PierreDiff
-            v-if="parsedFileDiff"
+            v-else-if="parsedFileDiff"
             :fileDiff="parsedFileDiff"
             :options="diffOptions"
             :lineAnnotations="lineAnnotations"
@@ -1770,5 +1767,27 @@ input:focus + .slider {
 .markdown-body :deep(ul), .markdown-body :deep(ol) {
   padding-left: 20px;
   margin: 8px 0;
+}
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  gap: 1rem;
+  color: #888;
+  font-size: 0.9rem;
+}
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-left-color: #007acc;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>
