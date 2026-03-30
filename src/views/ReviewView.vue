@@ -1010,6 +1010,8 @@ const lineAnnotations = computed(() => {
             :fileDiff="parsedFileDiff"
             :options="diffOptions"
             :lineAnnotations="lineAnnotations"
+            :expandedHunks="store.fileExpansionStates[file?.new_path]"
+            @expand-hunk="(map) => store.updateExpansionState(file?.new_path, map)"
             :oldFile="store.fileContents[file?.new_path]?.old ? getFileContentFromChange(store.fileContents[file?.new_path]?.old, file?.old_path) : undefined"
             :newFile="store.fileContents[file?.new_path]?.new ? getFileContentFromChange(store.fileContents[file?.new_path]?.new, file?.new_path) : undefined"
           />

@@ -73,6 +73,11 @@ export const useReviewStore = defineStore('review', () => {
   const fileContents = ref<Record<string, { old: string; new: string }>>({});
   const isSemanticLoading = ref(false);
   const isAstLoading = ref(false);
+  const fileExpansionStates = ref<Record<string, Map<number, any>>>({});
+
+  const updateExpansionState = (filePath: string, hunkMap: Map<number, any>) => {
+    fileExpansionStates.value[filePath] = new Map(hunkMap);
+  };
 
   const fetchFileContents = async (file: any) => {
     if (!activeProvider.value || !mrData.value || !file) return;
@@ -243,6 +248,8 @@ export const useReviewStore = defineStore('review', () => {
     addBatchedComment,
     removeBatchedComment,
     clearBatchedComments,
-    removeRemoteComment
+    removeRemoteComment,
+    fileExpansionStates,
+    updateExpansionState
   };
 });

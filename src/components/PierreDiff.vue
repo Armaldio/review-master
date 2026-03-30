@@ -14,6 +14,11 @@ const props = defineProps<{
   newFile?: FileContents;
   fileDiff?: FileDiffMetadata;
   lineAnnotations?: DiffLineAnnotation<any>[];
+  expandedHunks?: Map<number, any>;
+}>();
+
+const emit = defineEmits<{
+  (e: 'expandHunk', hunkMap: Map<number, any>): void;
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -25,8 +30,28 @@ const renderDiff = () => {
 
   if (!fileDiffInstance) {
     fileDiffInstance = new FileDiff(props.options);
+    
+    // Intercept hunk expansion to save state
+    const originalHandleExpandHunk = (fileDiffInstance as any).handleExpandHunk;
+    (fileDiffInstance as any).handleExpandHunk = (...args: any[]) => {
+      originalHandleExpandHunk.apply(fileDiffInstance, args);
+      // After expansion, the renderer's internal map is updated.
+      // We emit the new state so the parent can save it.
+      const internalMap = (fileDiffInstance as any).hunksRenderer.expandedHunks;
+      emit('expandHunk', internalMap);
+    };
   } else {
     fileDiffInstance.setOptions(props.options);
+  }
+
+  // Seed the's internal map with our persistent state if provided
+  if (props.expandedHunks) {
+    const internalMap = (fileDiffInstance as any).hunksRenderer.expandedHunks;
+    // We only seed if the map is empty (initial render) or if we want to force it
+    // Actually, we should sync it to ensure the view stays correct
+    props.expandedHunks.forEach((v, k) => {
+      internalMap.set(k, v);
+    });
   }
 
   fileDiffInstance.render({
