@@ -136,6 +136,7 @@ const parsedFileDiff = computed(() => {
   if (contents) {
     try {
       const language = getLanguage(f.new_path).toLowerCase();
+      // Use context: 3 for stability (avoids line-count mismatches at EOF)
       return parseDiffFromFile(
         { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
         { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
@@ -543,7 +544,7 @@ const baseDiffOptions = computed(() => ({
   diffStyle: viewMode.value ?? 'split',
   overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
   expandUnchanged: true,
-  collapsedContextThreshold: 3,
+  collapsedContextThreshold: 1, // Aggressively collapse unmodified lines between hunks
 }));
 
 const getSemanticDiffOptions = (change: any, overrideLanguage?: string) => ({
