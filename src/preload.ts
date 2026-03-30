@@ -11,4 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSecret: (account: string) => ipcRenderer.invoke('get-secret', account),
   deleteSecret: (account: string) => ipcRenderer.invoke('delete-secret', account),
   checkStorage: () => ipcRenderer.invoke('check-storage-encryption'),
+  runSem: (payload: any) => ipcRenderer.invoke('run-sem', payload),
+  runDifftastic: (payload: any) => ipcRenderer.invoke('run-difftastic', payload),
+  checkBinaries: () => ipcRenderer.invoke('check-binaries'),
 });

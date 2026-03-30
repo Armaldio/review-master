@@ -223,4 +223,16 @@ export class GitLabProvider extends BaseProvider {
     });
     if (!res.ok) throw new Error(`Edit failed: ${res.statusText}`);
   }
+
+  public async getFileContent(path: string, sha: string): Promise<string> {
+    const pat = await this.getPat();
+    const res = await fetch(`${this.mrData!.host}/api/v4/projects/${this.mrData!.encodedProjectPath}/repository/files/${encodeURIComponent(path)}/raw?ref=${sha}`, {
+      headers: { 'PRIVATE-TOKEN': pat! }
+    });
+    if (!res.ok) {
+        if (res.status === 404) return '';
+        throw new Error(`Failed to fetch file content: ${res.statusText}`);
+    }
+    return await res.text();
+  }
 }

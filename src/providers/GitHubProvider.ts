@@ -220,4 +220,19 @@ export class GitHubProvider extends BaseProvider {
     });
     if (!res.ok) throw new Error(`Edit failed: ${res.statusText}`);
   }
+
+  public async getFileContent(path: string, sha: string): Promise<string> {
+    const pat = await this.getPat();
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/contents/${path}?ref=${sha}`, {
+      headers: { 
+          'Authorization': `Bearer ${pat}`,
+          'Accept': 'application/vnd.github.v3.raw'
+      }
+    });
+    if (!res.ok) {
+        if (res.status === 404) return '';
+        throw new Error(`Failed to fetch file content: ${res.statusText}`);
+    }
+    return await res.text();
+  }
 }

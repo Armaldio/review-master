@@ -19,6 +19,7 @@ const showAllFiles = ref(false);
 const showOnlyMyFiles = ref(false);
 const wordWrap = ref(true);
 const useTreeView = ref(true);
+const currentTab = ref<"diff" | "semantic" | "ast">("diff");
 
 const isSubmitting = ref(false);
 
@@ -179,10 +180,31 @@ const PENCIL_ICON = `
 </svg>
 `;
 
-const selectFile = (path: string) => {
+const selectFile = async (path: string) => {
   store.selectFile(path);
   inlineCommentLocation.value = null;
+  
+  // Fetch full contents for "expand" context and reuse in semantic tab
+  if (file.value) {
+    store.fetchFileContents(file.value);
+  }
+
+  if (currentTab.value === "semantic") {
+    store.fetchSemanticDiff(file.value);
+  }
+  if (currentTab.value === "ast") {
+    store.fetchAstDiff(file.value);
+  }
 };
+
+watch(currentTab, (newTab) => {
+  if (newTab === "semantic" && file.value) {
+    store.fetchSemanticDiff(file.value);
+  }
+  if (newTab === "ast" && file.value) {
+    store.fetchAstDiff(file.value);
+  }
+});
 
 // --- Emoji Support ---
 
@@ -510,11 +532,56 @@ const createRemoteCommentElement = (comment: any): HTMLElement => {
 };
 
 // --- Diff options with gutter utility ---
+const getLanguage = (filePath: string) => {
+  const ext = filePath.split('.').pop()?.toLowerCase();
+  if (!ext) return 'text';
+  const map: Record<string, string> = {
+    'vue': 'vue',
+    'ts': 'typescript',
+    'tsx': 'tsx',
+    'js': 'javascript',
+    'jsx': 'jsx',
+    'css': 'css',
+    'html': 'html',
+    'json': 'json',
+    'md': 'markdown',
+    'py': 'python',
+    'go': 'go',
+    'rs': 'rust'
+  };
+  return map[ext] || ext;
+};
+
+const getSemanticDiffOptions = (change: any) => ({
+  diffStyle: 'unified' as const, // For space saving
+  overflow: 'wrap' as const,
+  enableGutterUtility: false, // No comments on semantic cards yet
+  enableLineSelection: false,
+  language: getLanguage(change.filePath),
+});
+
+const getFileContentFromChange = (contents: string, filePath: string) => ({
+  name: filePath,
+  contents: contents || "",
+});
+
+const getAstContent = (items: any[], side: 'lhs' | 'rhs') => {
+  return items
+    .map(item => {
+      const data = item[side];
+      if (!data || !data.changes) return null;
+      return data.changes.map((c: any) => c.content).join('');
+    })
+    .filter(c => c !== null)
+    .join('\n');
+};
+
 const diffOptions = computed(() => ({
   diffStyle: viewMode.value ?? 'split',
   overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
   enableGutterUtility: true,
   enableLineSelection: true,
+  language: file.value ? getLanguage(file.value.new_path) : 'text',
   onLineSelectionEnd: (range: SelectedLineRange | null) => {
     if (range) {
       inlineCommentLocation.value = {
@@ -905,6 +972,26 @@ const lineAnnotations = computed(() => {
             Wrap Words
           </button>
         </div>
+        <div class="tab-switcher">
+          <button
+            :class="{ active: currentTab === 'diff' }"
+            @click="currentTab = 'diff'"
+          >
+            Diff
+          </button>
+          <button
+            :class="{ active: currentTab === 'semantic' }"
+            @click="currentTab = 'semantic'"
+          >
+            Semantic
+          </button>
+          <button
+            :class="{ active: currentTab === 'ast' }"
+            @click="currentTab = 'ast'"
+          >
+            AST
+          </button>
+        </div>
         <div class="actions">
           <button class="btn-primary" @click="markAsViewed">
             Mark as Viewed
@@ -913,14 +1000,77 @@ const lineAnnotations = computed(() => {
       </div>
 
       <div class="diff-area">
-        <PierreDiff
-          v-if="parsedFileDiff"
-          :fileDiff="parsedFileDiff"
-          :options="diffOptions"
-          :lineAnnotations="lineAnnotations"
-        />
-        <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
-        <div v-else class="empty-state">Select a file to review</div>
+        <template v-if="currentTab === 'diff'">
+          <PierreDiff
+            v-if="parsedFileDiff"
+            :fileDiff="parsedFileDiff"
+            :options="diffOptions"
+            :lineAnnotations="lineAnnotations"
+            :oldFile="store.fileContents[file?.new_path]?.old ? getFileContentFromChange(store.fileContents[file?.new_path]?.old, file?.old_path) : undefined"
+            :newFile="store.fileContents[file?.new_path]?.new ? getFileContentFromChange(store.fileContents[file?.new_path]?.new, file?.new_path) : undefined"
+          />
+          <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
+          <div v-else class="empty-state">Select a file to review</div>
+        </template>
+        <template v-else-if="currentTab === 'semantic'">
+          <div v-if="store.isSemanticLoading" class="loading-state">
+            <div class="spinner"></div>
+            Analyzing semantic changes...
+          </div>
+          <div v-else-if="file && store.semanticDiffs[file.new_path]" class="semantic-results">
+            <div class="semantic-summary" v-if="store.semanticDiffs[file.new_path].summary">
+              <span>{{ store.semanticDiffs[file.new_path].summary.total }} changes:</span>
+              <span class="status-count added">{{ store.semanticDiffs[file.new_path].summary.added }} added</span>,
+              <span class="status-count modified">{{ store.semanticDiffs[file.new_path].summary.modified }} modified</span>,
+              <span class="status-count deleted">{{ store.semanticDiffs[file.new_path].summary.deleted }} deleted</span>
+            </div>
+            <div v-for="change in store.semanticDiffs[file.new_path].changes" :key="change.entityId" class="semantic-entity">
+              <div class="entity-header">
+                <span class="entity-status" :class="change.changeType">{{ change.changeType }}</span>
+                <span class="entity-type">{{ change.entityType }}</span>
+                <span class="entity-name">{{ change.entityName }}</span>
+              </div>
+              <div class="entity-diff-viewer">
+                <PierreDiff
+                  :options="getSemanticDiffOptions(change)"
+                  :oldFile="getFileContentFromChange(change.beforeContent, change.filePath)"
+                  :newFile="getFileContentFromChange(change.afterContent, change.filePath)"
+                />
+              </div>
+            </div>
+            <div v-if="!store.semanticDiffs[file.new_path].changes || store.semanticDiffs[file.new_path].changes.length === 0" class="empty-state">
+              No semantic changes detected for this file.
+            </div>
+          </div>
+          <div v-else-if="file" class="empty-state">Click "Semantic" to analyze this file</div>
+          <div v-else class="empty-state">Select a file to review</div>
+        </template>
+        <template v-else-if="currentTab === 'ast'">
+          <div v-if="store.isAstLoading" class="loading-state">
+            <div class="spinner"></div>
+            Analyzing structural AST changes...
+          </div>
+          <div v-else-if="file && store.astDiffs[file.new_path]" class="ast-results">
+            <div class="ast-summary">
+               Structural analysis complete. Found {{ store.astDiffs[file.new_path].chunks?.length || 0 }} structural regions.
+            </div>
+            <div v-for="(chunk, idx) in store.astDiffs[file.new_path].chunks" :key="idx" class="ast-hunk">
+               <div class="hunk-header">Region {{ Number(idx) + 1 }}</div>
+               <div class="hunk-diff-viewer">
+                  <PierreDiff
+                    :options="getSemanticDiffOptions({ filePath: file.new_path })"
+                    :oldFile="getFileContentFromChange(getAstContent(chunk, 'lhs'), file.old_path)"
+                    :newFile="getFileContentFromChange(getAstContent(chunk, 'rhs'), file.new_path)"
+                  />
+               </div>
+            </div>
+            <div v-if="!store.astDiffs[file.new_path].chunks || store.astDiffs[file.new_path].chunks.length === 0" class="empty-state">
+              No structural differences detected.
+            </div>
+          </div>
+          <div v-else-if="file" class="empty-state">Click "AST" to see structural changes</div>
+          <div v-else class="empty-state">Select a file to review</div>
+        </template>
       </div>
     </div>
   </div>
@@ -1154,7 +1304,158 @@ input:focus + .slider {
   height: 100%;
   color: #666;
 }
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  gap: 1rem;
+  color: #8b949e;
+}
+.spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(255,255,255,.1);
+  border-top-color: #007bff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
+.tab-switcher {
+  display: flex;
+  background: #161b22;
+  border-radius: 6px;
+  padding: 2px;
+}
+.tab-switcher button {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  padding: 4px 12px;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tab-switcher button.active {
+  background: #30363d;
+  color: #fff;
+}
+
+.semantic-results {
+  padding: 1rem;
+  overflow-y: auto;
+}
+.semantic-summary {
+  margin-bottom: 1rem;
+  padding: 8px 12px;
+  background: #21262d;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.status-count.added { color: #2ea043; }
+.status-count.modified { color: #d29922; }
+.status-count.deleted { color: #f85149; }
+
+.semantic-entity {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+.entity-header {
+  padding: 8px 12px;
+  background: #21262d;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.entity-status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  font-weight: bold;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.entity-status.modified { background: #b67501; color: #fff; }
+.entity-status.added { background: #238636; color: #fff; }
+.entity-status.deleted { background: #da3633; color: #fff; }
+
+.entity-diff-viewer {
+  border-top: 1px solid #30363d;
+  background: #0d1117;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.entity-diff-viewer :deep(.diff-viewer-wrapper) {
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+.entity-diff-viewer :deep(diffs-container) {
+  font-size: 12px !important;
+}
+
+.ast-results {
+  padding: 1rem;
+  overflow-y: auto;
+}
+.ast-hunk {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+.hunk-header {
+  padding: 8px 12px;
+  background: #21262d;
+  font-size: 0.85rem;
+  font-weight: bold;
+  color: #c9d1d9;
+}
+.hunk-diff-viewer :deep(.diff-viewer-wrapper) {
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+.ast-summary {
+  margin-bottom: 1rem;
+  padding: 8px 12px;
+  background: #21262d;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #8b949e;
+}
+
+.entity-type {
+  color: #8b949e;
+  font-style: italic;
+  font-size: 0.85rem;
+}
+.entity-name {
+  font-weight: bold;
+  color: #c9d1d9;
+}
+.entity-diff {
+  margin: 0;
+  padding: 12px;
+  font-size: 0.8rem;
+  background: #0d1117;
+  color: #e6edf3;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 </style>
 
 <style>

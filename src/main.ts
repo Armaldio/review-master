@@ -1,8 +1,14 @@
 import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
 import { simpleGit, SimpleGit } from 'simple-git';
 import started from 'electron-squirrel-startup';
+import { exec, spawn } from 'node:child_process';
+import https from 'node:https';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -166,6 +172,184 @@ app.on('ready', () => {
     }
   });
 
+  // --- Binary Management (sem, difft) ---
+  const BIN_DIR = path.join(app.getPath('userData'), 'bin');
+  const SEM_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'sem.exe' : 'sem');
+  const DIFFT_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'difft.exe' : 'difft');
+
+  async function downloadFile(url: string, dest: string) {
+    return new Promise((resolve, reject) => {
+      const file = createWriteStream(dest);
+      https.get(url, (response) => {
+        if (response.statusCode === 302 || response.statusCode === 301) {
+          downloadFile(response.headers.location!, dest).then(resolve).catch(reject);
+          return;
+        }
+        response.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          resolve(true);
+        });
+      }).on('error', (err) => {
+        fs.unlink(dest);
+        reject(err);
+      });
+    });
+  }
+
+  async function initBinaries() {
+    try {
+      await fs.mkdir(BIN_DIR, { recursive: true });
+      const stats = await fs.stat(SEM_PATH).catch(() => null);
+      
+      if (!stats) {
+        console.log('[Binaries] sem not found, downloading...');
+        const platformMap: Record<string, string> = { 'linux': 'linux', 'darwin': 'darwin', 'win32': 'windows' };
+        const archMap: Record<string, string> = { 'x64': 'x86_64', 'arm64': 'arm64' };
+        
+        const platform = platformMap[process.platform];
+        const arch = archMap[process.arch];
+        
+        if (!platform || !arch) {
+          console.error(`[Binaries] Unsupported platform/arch: ${process.platform}/${process.arch}`);
+          return;
+        }
+
+        const extension = platform === 'windows' ? 'zip' : 'tar.gz';
+        const url = `https://github.com/Ataraxy-Labs/sem/releases/download/v0.3.10/sem-${platform}-${arch}.${extension}`;
+        const archivePath = path.join(BIN_DIR, `sem-download.${extension}`);
+
+        await downloadFile(url, archivePath);
+        console.log(`[Binaries] Downloaded sem archive. Extracting...`);
+
+        if (platform === 'windows') {
+            // Placeholder for windows zip extraction if needed
+            console.warn('[Binaries] Windows ZIP extraction not implemented yet.');
+        } else {
+            await execAsync(`tar -xzf "${archivePath}" -C "${BIN_DIR}"`);
+            await fs.chmod(SEM_PATH, 0o755);
+        }
+        
+        await fs.unlink(archivePath);
+        console.log('[Binaries] sem installed successfully.');
+      } else {
+        console.log('[Binaries] sem is already installed.');
+      }
+
+      // Difftastic
+      const difftStats = await fs.stat(DIFFT_PATH).catch(() => null);
+      if (!difftStats) {
+        console.log('[Binaries] difft not found, downloading...');
+        const platformMap: Record<string, string> = { 'linux': 'unknown-linux-gnu', 'darwin': 'apple-darwin', 'win32': 'pc-windows-msvc' };
+        const archMap: Record<string, string> = { 'x64': 'x86_64', 'arm64': 'aarch64' };
+        
+        const platform = platformMap[process.platform];
+        const arch = archMap[process.arch];
+        
+        if (!platform || !arch) return;
+
+        const extension = process.platform === 'win32' ? 'zip' : 'tar.gz';
+        const url = `https://github.com/Wilfred/difftastic/releases/download/0.68.0/difft-${arch}-${platform}.${extension}`;
+        const archivePath = path.join(BIN_DIR, `difft-download.${extension}`);
+
+        await downloadFile(url, archivePath);
+        if (process.platform === 'win32') {
+          console.warn('[Binaries] Windows ZIP extraction not implemented yet for difft.');
+        } else {
+          await execAsync(`tar -xzf "${archivePath}" -C "${BIN_DIR}"`);
+          await fs.chmod(DIFFT_PATH, 0o755);
+        }
+        await fs.unlink(archivePath);
+        console.log('[Binaries] difft installed successfully.');
+      } else {
+        console.log('[Binaries] difft is already installed.');
+      }
+    } catch (error) {
+      console.error('[Binaries] Failed to initialize binaries:', error);
+    }
+  }
+
+  ipcMain.handle('run-sem', async (event, payload: any) => {
+    return new Promise((resolve) => {
+      console.log(`[IPC:run-sem] Running semantic diff for: ${payload.filePath}`);
+      const input = JSON.stringify([payload]);
+      // console.log(`[IPC:run-sem] Input: ${input}`); // Debug: uncomment if needed
+
+      const child = spawn(SEM_PATH, ['diff', '--stdin', '--format', 'json']);
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => stdout += data);
+      child.stderr.on('data', (data) => stderr += data);
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const data = JSON.parse(stdout);
+            console.log(`[IPC:run-sem] Success! Output contains ${data[0]?.entities?.length || 0} entities.`);
+            resolve({ success: true, data });
+          } catch (e) {
+            console.error(`[IPC:run-sem] Parse error. Raw output: ${stdout}`);
+            resolve({ success: false, error: 'Failed to parse sem output', raw: stdout });
+          }
+        } else {
+          console.error(`[IPC:run-sem] Process exited with code ${code}. Stderr: ${stderr}`);
+          resolve({ success: false, error: stderr || `Process exited with code ${code}`, input });
+        }
+      });
+      
+      child.stdin.write(input);
+      child.stdin.end();
+    });
+  });
+
+  ipcMain.handle('run-difftastic', async (event, payload: { filePath: string, beforeContent: string, afterContent: string }) => {
+    const tmpDir = path.join(app.getPath('temp'), `review-master-${Date.now()}`);
+    await fs.mkdir(tmpDir, { recursive: true });
+    
+    const ext = path.extname(payload.filePath);
+    const oldPath = path.join(tmpDir, `old${ext}`);
+    const newPath = path.join(tmpDir, `new${ext}`);
+    
+    await fs.writeFile(oldPath, payload.beforeContent);
+    await fs.writeFile(newPath, payload.afterContent);
+    
+    return new Promise((resolve) => {
+      console.log(`[IPC:run-difft] Running AST diff for: ${payload.filePath}`);
+      const child = spawn(DIFFT_PATH, ['--display', 'json', oldPath, newPath], {
+        env: { ...process.env, DFT_UNSTABLE: 'yes' }
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => stdout += data);
+      child.stderr.on('data', (data) => stderr += data);
+      
+      child.on('close', async (code) => {
+        // Clean up
+        await fs.rm(tmpDir, { recursive: true, force: true });
+        
+        if (code === 0 || code === 1) { // 1 often means differences found
+          try {
+            resolve({ success: true, data: JSON.parse(stdout) });
+          } catch (e) {
+            resolve({ success: false, error: 'Failed to parse difftastic output', raw: stdout });
+          }
+        } else {
+          resolve({ success: false, error: stderr || `Process exited with code ${code}` });
+        }
+      });
+    });
+  });
+
+  ipcMain.handle('check-binaries', async () => {
+    const semExists = await fs.stat(SEM_PATH).then(() => true).catch(() => false);
+    const difftExists = await fs.stat(DIFFT_PATH).then(() => true).catch(() => false);
+    return { sem: semExists, difft: difftExists, inspect: false };
+  });
+
   ipcMain.handle('check-storage-encryption', async () => {
     const available = safeStorage.isEncryptionAvailable();
     return { 
@@ -174,6 +358,7 @@ app.on('ready', () => {
     };
   });
 
+  initBinaries();
   createWindow();
 });
 

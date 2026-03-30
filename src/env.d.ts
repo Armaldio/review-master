@@ -6,8 +6,11 @@ declare interface Window {
     getAppPath: () => Promise<string>;
     readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
     setSecret: (account: string, value: string) => Promise<{ success: boolean; error?: string; message?: string }>;
-    getSecret: (account: string) => Promise<{ success: boolean; value?: string | null; error?: string; message?: string }>;
-    deleteSecret: (account: string) => Promise<{ success: boolean; error?: string; message?: string }>;
-    checkStorage: () => Promise<{ success: boolean; message?: string }>;
+    getSecret: (account: string) => Promise<{ success: boolean; value?: string; error?: string }>;
+    deleteSecret: (account: string) => Promise<{ success: boolean; error?: string }>;
+    checkStorage: () => Promise<{ success: boolean; message: string }>;
+    runSem: (payload: any) => Promise<{ success: boolean; data?: any; error?: string; raw?: string; input?: string }>;
+    runDifftastic: (payload: any) => Promise<{ success: boolean; data?: any; error?: string; raw?: string }>;
+    checkBinaries: () => Promise<{ sem: boolean; difft: boolean; inspect: boolean }>;
   };
 }

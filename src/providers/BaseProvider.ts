@@ -59,4 +59,6 @@ export abstract class BaseProvider {
   public abstract addReaction(comment: any, emojiName: string): Promise<void>;
 
   public abstract editComment(commentId: string, body: string): Promise<void>;
+
+  public abstract getFileContent(path: string, sha: string): Promise<string>;
 }
