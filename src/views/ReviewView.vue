@@ -137,11 +137,13 @@ const parsedFileDiff = computed(() => {
     try {
       const language = getLanguage(f.new_path).toLowerCase();
       // Use context: 3 for stability (avoids line-count mismatches at EOF)
-      return parseDiffFromFile(
+      const metadata = parseDiffFromFile(
         { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
         { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
         { context: 3 }
       );
+
+      return (metadata as any);
     } catch (e) {
       console.warn("Failed to generate metadata from full contents", e);
     }
@@ -543,8 +545,8 @@ const createRemoteCommentElement = (comment: any): HTMLElement => {
 const baseDiffOptions = computed(() => ({
   diffStyle: viewMode.value ?? 'split',
   overflow: wordWrap.value ? 'wrap' as const : 'scroll' as const,
-  expandUnchanged: true,
-  collapsedContextThreshold: 1, // Aggressively collapse unmodified lines between hunks
+  expandUnchanged: false, // DO NOT expand all by default; this ensures the "hunk-only" view
+  collapsedContextThreshold: 1, 
 }));
 
 const getSemanticDiffOptions = (change: any, overrideLanguage?: string) => ({
