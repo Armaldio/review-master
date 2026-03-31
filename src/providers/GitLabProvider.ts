@@ -1,5 +1,6 @@
 import { BaseProvider } from './BaseProvider';
 import { Comment, DiffFile, MRMetadata, CodeownerRule, User } from './types';
+import { useStorage } from '@vueuse/core';
 
 export class GitLabProvider extends BaseProvider {
   public platform: 'gitlab' = 'gitlab' as const;
@@ -10,6 +11,10 @@ export class GitLabProvider extends BaseProvider {
   public remoteComments: Comment[] = [];
 
   protected patLabel = 'gitlab_pat';
+  
+  // Persistent cache for group memberships (24h TTL)
+  private membershipCache = useStorage<Record<string, { isMember: boolean; timestamp: number }>>('gitlab-membership-cache', {});
+  private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours in ms
 
   public async initialize(parsed: { host: string; projectPath: string; number: string }): Promise<void> {
     const pat = await this.getPat();
@@ -41,15 +46,9 @@ export class GitLabProvider extends BaseProvider {
     if (!userRes.ok) throw new Error('Failed to fetch user info');
     this.currentUser = await userRes.json();
 
-    // Fetch User Groups (Paginated)
-    const patGroups = await window.electronAPI.getSecret('gitlab_pat');
-    const patG = patGroups.success ? patGroups.value : (localStorage.getItem('gitlab_pat') || '');
-    if (!host) throw new Error('Host is missing for GitLab provider initialization');
-    const allGroups = await this.fetchAllGroups(host as string, patG as string);
-    
+    // Initialize empty groups array to maintain strict verification
     if (this.currentUser) {
-      this.currentUser.groups = allGroups.map((g: any) => `@${g.full_path}`);
-      console.log(`[GitLab] Total memberships fetched: ${allGroups.length}`);
+      this.currentUser.groups = [];
     }
 
     // Fetch Project Details for Ancestry/Sharing
@@ -58,7 +57,7 @@ export class GitLabProvider extends BaseProvider {
     });
     if (!projectRes.ok) throw new Error('Failed to fetch project details');
     const project = await projectRes.json();
-    
+
     const ancestors = this.resolveAncestors(project.namespace.full_path);
     const sharedGroups = (project.shared_with_groups || []).map((g: any) => `@${g.group_full_path}`);
 
@@ -91,19 +90,21 @@ export class GitLabProvider extends BaseProvider {
     if (this.currentUser) {
       const projectRelated = [...ancestors, ...sharedGroups, `@${project.namespace.full_path}`];
       
-      // Filter for groups that are actually used in CODEOWNERS to avoid unnecessary API calls
+      // Filter for groups that are actually used in CODEOWNERS to identify *candidate* owning groups
       const candidateGroups = projectRelated.filter(grp => allRuleOwners.has(grp));
       
       for (const grp of candidateGroups) {
-          if (!this.currentUser!.groups!.includes(grp)) {
-              console.log(`[GitLab] Verifying membership for candidate group: ${grp}...`);
-              const isMember = await this.checkGroupMembership(host, pat, grp.replace('@', ''), this.currentUser!.id);
-              if (isMember) {
-                  console.log(`[GitLab] Membership verified for ${grp}. Adding to profile.`);
-                  this.currentUser!.groups!.push(grp);
-              } else {
-                  console.log(`[GitLab] User is NOT a member of ${grp}.`);
-              }
+          // Perform a mandatory STRICT DIRECT membership check for every relevant owning group
+          console.log(`[GitLab] Verifying STRICT DIRECT membership for candidate group: ${grp}...`);
+          const isDirectMember = await this.checkGroupMembership(host, pat, grp.replace('@', ''), this.currentUser!.id);
+          
+          if (isDirectMember) {
+            console.log(`[GitLab] Direct membership verified for ${grp}. Adding to profile.`);
+            if (!this.currentUser!.groups!.includes(grp)) {
+                this.currentUser!.groups!.push(grp);
+            }
+          } else {
+            console.log(`[GitLab] User is NOT a direct member of ${grp}. Skipping.`);
           }
       }
     }
@@ -161,58 +162,51 @@ export class GitLabProvider extends BaseProvider {
     const parts = fullPath.split('/');
     const ancestors: string[] = [];
     let current = '';
-    
+
     for (let i = 0; i < parts.length - 1; i++) {
-        current = current ? `${current}/${parts[i]}` : parts[i];
-        ancestors.push(`@${current}`);
+      current = current ? `${current}/${parts[i]}` : parts[i];
+      ancestors.push(`@${current}`);
     }
     return ancestors;
   }
 
-  private async fetchAllGroups(host: string, pat: string): Promise<any[]> {
-    let allGroups: any[] = [];
-    let page = 1;
-    const perPage = 100;
-    let hasNextPage = true;
-
-    while (hasNextPage) {
-      const res = await fetch(`${host}/api/v4/groups?all_available=false&min_access_level=10&per_page=${perPage}&page=${page}`, {
-        headers: { 'PRIVATE-TOKEN': pat }
-      });
-      
-      if (!res.ok) {
-        console.error(`[GitLab] Error fetching groups (page ${page}): ${res.statusText}`);
-        break;
-      }
-
-      const groups = await res.json();
-      allGroups = allGroups.concat(groups);
-
-      const nextPage = res.headers.get('x-next-page');
-      if (nextPage && groups.length === perPage) {
-        page = parseInt(nextPage, 10);
-      } else {
-        hasNextPage = false;
-      }
+  private async checkGroupMembership(host: string, pat: string, groupPath: string, userId: string | number): Promise<boolean> {
+    const cacheKey = `${host}:${userId}:${groupPath}`;
+    const now = Date.now();
+    
+    // Check Cache first
+    const cached = this.membershipCache.value[cacheKey];
+    if (cached && (now - cached.timestamp < this.CACHE_TTL)) {
+      console.log(`[GitLab] Cache HIT for ${groupPath}: ${cached.isMember}`);
+      return cached.isMember;
     }
 
-    return allGroups;
-  }
-
-  private async checkGroupMembership(host: string, pat: string, groupPath: string, userId: string | number): Promise<boolean> {
     try {
       const encodedPath = encodeURIComponent(groupPath);
-      const res = await fetch(`${host}/api/v4/groups/${encodedPath}/members/all?user_ids=${userId}`, {
+      // Endpoint /members returns only DIRECT members
+      const res = await fetch(`${host}/api/v4/groups/${encodedPath}/members?user_ids=${userId}`, {
         headers: { 'PRIVATE-TOKEN': pat }
       });
       
+      let isMember = false;
       if (res.ok) {
         const members = await res.json();
-        return members.length > 0;
+        if (members.length > 0) {
+            const member = members[0];
+            console.log(`[GitLab] Strict Membership Match: Found direct member with access level: ${member.access_level}`);
+            isMember = true;
+        }
       }
-      return false;
+
+      // Update Cache
+      this.membershipCache.value[cacheKey] = {
+        isMember,
+        timestamp: now
+      };
+      
+      return isMember;
     } catch (e) {
-      console.error(`[GitLab] Membership check failed for ${groupPath}:`, e);
+      console.error(`[GitLab] Direct membership check failed for ${groupPath}:`, e);
       return false;
     }
   }

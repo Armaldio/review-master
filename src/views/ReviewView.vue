@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import type { DiffLineAnnotation, AnnotationSide, SelectedLineRange } from "@pierre/diffs";
 import { useRouter } from "vue-router";
 import { useReviewStore, getLanguage } from "../store";
@@ -52,14 +52,7 @@ if (!store.mrData) {
 
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
-const viewedCount = computed(() => store.viewedFiles.size);
-const totalFilesCount = computed(() => modifiedFiles.value.length);
-const progressPercent = computed(() => {
-  if (totalFilesCount.value === 0) return 0;
-  return Math.round((viewedCount.value / totalFilesCount.value) * 100);
-});
-
-const displayedFiles = computed(() => {
+const relevantFiles = computed(() => {
   let files = modifiedFiles.value;
 
   if (
@@ -69,27 +62,27 @@ const displayedFiles = computed(() => {
   ) {
     const myUsername = `@${store.currentUser.username}`;
     const myGroups: string[] = store.currentUser.groups || [];
-    
-    console.log(`[Codeowners] Filtering active. User: ${myUsername} | Groups: ${myGroups.join(', ')}`);
-
-    let matchCount = 0;
     files = files.filter((filePath) => {
       const owners = store.fileOwners[filePath] || [];
       const hasDirectMatch = owners.includes(myUsername);
       const hasGroupMatch = myGroups.some((g: string) => owners.includes(g));
-      const match = hasDirectMatch || hasGroupMatch;
-      
-      if (match) matchCount++;
-      
-      // Log first 10 for debugging
-      if (files.indexOf(filePath) < 10) {
-          console.log(`[Codeowners] File: ${filePath.split('/').pop()} | Owners: [${owners.join(', ')}] | Match: ${match ? 'YES' : 'NO'}`);
-      }
-      
-      return match;
+      return hasDirectMatch || hasGroupMatch;
     });
-    console.log(`[Codeowners] Total matches found: ${matchCount} / ${modifiedFiles.value.length}`);
   }
+
+  return files;
+});
+
+const totalFilesCount = computed(() => relevantFiles.value.length);
+const viewedCount = computed(() => relevantFiles.value.filter(f => store.viewedFiles.has(f)).length);
+
+const progressPercent = computed(() => {
+  if (totalFilesCount.value === 0) return 0;
+  return Math.round((viewedCount.value / totalFilesCount.value) * 100);
+});
+
+const displayedFiles = computed(() => {
+  let files = relevantFiles.value;
 
   // Filter out reviewed files unless 'Show all files' is checked
   if (!showAllFiles.value) {
@@ -170,7 +163,16 @@ const parsedFileDiff = computed(() => {
   if (contents) {
     try {
       const language = getLanguage(f.new_path).toLowerCase();
-      // Use context: 3 for stability (avoids line-count mismatches at EOF)
+      // Optimization: use the GitLab-provided diff patch if available
+      // This avoids expensive Myer's diff computation on the client.
+      if ((f as any).diff) {
+        const parsed = parsePatchFiles((f as any).diff);
+        if (parsed && parsed.length > 0) {
+          return parsed[0] as any;
+        }
+      }
+
+      // Fallback: calculate diff from full files
       const metadata = parseDiffFromFile(
         { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
         { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
@@ -179,7 +181,7 @@ const parsedFileDiff = computed(() => {
 
       return (metadata as any);
     } catch (e) {
-      console.warn("Failed to generate metadata from full contents", e);
+      console.warn("Failed to generate metadata from contents/patch", e);
     }
   }
 
@@ -1281,6 +1283,7 @@ const lineAnnotations = computed(() => {
   font-weight: 500;
   letter-spacing: 0.02em;
 }
+
 .toggles {
   display: flex;
   flex-direction: column;
