@@ -47,4 +47,8 @@ export abstract class BaseProvider {
   public abstract editComment(commentId: string, body: string): Promise<void>;
 
   public abstract getFileContent(path: string, sha: string): Promise<string>;
+
+  public abstract postFileComment(path: string, body: string): Promise<Comment>;
+  
+  public abstract submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void>;
 }

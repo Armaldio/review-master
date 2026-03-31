@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import type { DiffLineAnnotation, AnnotationSide, SelectedLineRange } from "@pierre/diffs";
 import { useRouter } from "vue-router";
 import { useReviewStore, getLanguage } from "../store";
@@ -20,8 +20,16 @@ const showOnlyMyFiles = ref(false);
 const wordWrap = ref(true);
 const useTreeView = ref(true);
 const currentTab = ref<"diff" | "semantic" | "ast">("diff");
-
 const isSubmitting = ref(false);
+
+// Review Submission State
+const showReviewModal = ref(false);
+const reviewComment = ref('');
+const reviewAction = ref<'approve' | 'request_changes' | 'comment'>('comment');
+
+// File Comment State
+const fileCommentBody = ref('');
+
 const exitReview = () => {
   router.push("/");
 };
@@ -67,6 +75,11 @@ const displayedFiles = computed(() => {
       return owners.includes(myUsername) || 
              (store.currentUser.groups && owners.some(o => store.currentUser.groups!.includes(o)));
     });
+  }
+
+  // Filter out reviewed files unless 'Show all files' is checked
+  if (!showAllFiles.value) {
+    files = files.filter((filePath) => !store.viewedFiles.has(filePath));
   }
 
   return files;
@@ -414,6 +427,39 @@ const sendBatchComments = async () => {
   } finally {
     isSubmitting.value = false;
   }
+};
+
+const submitReview = async () => {
+    if (!store.activeProvider) return;
+    isSubmitting.value = true;
+    try {
+        await store.activeProvider.submitReview(reviewComment.value, reviewAction.value);
+        alert(`Review submitted as ${reviewAction.value}!`);
+        showReviewModal.value = false;
+        reviewComment.value = '';
+    } catch (err) {
+        alert(`Review failed: ${(err as Error).message}`);
+    } finally {
+        isSubmitting.value = false;
+    }
+};
+
+const postFileComment = async () => {
+    if (!store.activeProvider || !store.selectedFile) return;
+    const body = fileCommentBody.value.trim();
+    if (!body) return;
+    
+    isSubmitting.value = true;
+    try {
+        const comment = await store.activeProvider.postFileComment(store.selectedFile, body);
+        store.remoteComments.push(comment);
+        fileCommentBody.value = '';
+        annotationVersion.value++;
+    } catch (err) {
+        alert(`File comment failed: ${(err as Error).message}`);
+    } finally {
+        isSubmitting.value = false;
+    }
 };
 
 // --- Annotation rendering ---
@@ -967,57 +1013,77 @@ const lineAnnotations = computed(() => {
 
     <div class="main-content">
       <div class="toolbar">
-        <div class="view-toggles">
-          <button
-            :class="{ active: viewMode === 'split' }"
-            @click="viewMode = 'split'"
-          >
-            Split
-          </button>
-          <button
-            :class="{ active: viewMode === 'unified' }"
-            @click="viewMode = 'unified'"
-          >
-            Unified
-          </button>
-          <button
-            :class="{ active: wordWrap }"
-            @click="wordWrap = !wordWrap"
-          >
-            Wrap Words
-          </button>
+        <button class="btn-secondary" @click="exitReview">
+          Exit Review
+        </button>
+
+        <div class="center-controls">
+          <div class="view-toggles">
+            <button
+              :class="{ active: viewMode === 'split' }"
+              @click="viewMode = 'split'"
+            >
+              Split
+            </button>
+            <button
+              :class="{ active: viewMode === 'unified' }"
+              @click="viewMode = 'unified'"
+            >
+              Unified
+            </button>
+            <button
+              :class="{ active: wordWrap }"
+              @click="wordWrap = !wordWrap"
+            >
+              Wrap Words
+            </button>
+          </div>
+          <div class="tab-switcher">
+            <button
+              :class="{ active: currentTab === 'diff' }"
+              @click="currentTab = 'diff'"
+            >
+              Diff
+            </button>
+            <button
+              :class="{ active: currentTab === 'semantic' }"
+              @click="currentTab = 'semantic'"
+            >
+              Semantic
+            </button>
+            <button
+              :class="{ active: currentTab === 'ast' }"
+              @click="currentTab = 'ast'"
+            >
+              AST
+            </button>
+          </div>
         </div>
-        <div class="tab-switcher">
-          <button
-            :class="{ active: currentTab === 'diff' }"
-            @click="currentTab = 'diff'"
-          >
-            Diff
-          </button>
-          <button
-            :class="{ active: currentTab === 'semantic' }"
-            @click="currentTab = 'semantic'"
-          >
-            Semantic
-          </button>
-          <button
-            :class="{ active: currentTab === 'ast' }"
-            @click="currentTab = 'ast'"
-          >
-            AST
-          </button>
-        </div>
-        <div class="actions">
+
+        <div class="primary-actions">
           <button class="btn-primary" @click="markAsViewed">
             Mark as Viewed
           </button>
-          <button class="btn-secondary" @click="exitReview">
-            Exit Review
+          <button class="btn-review" @click="showReviewModal = true">
+            Submit Review
           </button>
         </div>
       </div>
 
       <div class="diff-area">
+        <div class="file-header" v-if="file">
+            <div class="file-info">
+                <span class="file-name">{{ file.new_path }}</span>
+                <span class="file-stats">
+                    <span class="added">+{{ parsedFileDiff?.additions || 0 }}</span>
+                    <span class="deleted">-{{ parsedFileDiff?.deletions || 0 }}</span>
+                </span>
+            </div>
+            <div class="file-actions">
+                <!-- File Comment is now persistent at the bottom -->
+            </div>
+        </div>
+
         <template v-if="currentTab === 'diff'">
           <div v-if="file && !parsedFileDiff" class="loading-state">
             <div class="spinner"></div>
@@ -1098,7 +1164,58 @@ const lineAnnotations = computed(() => {
           <div v-else-if="file" class="empty-state">Click "AST" to see structural changes</div>
           <div v-else class="empty-state">Select a file to review</div>
         </template>
+
+        <div class="file-comment-editor" v-if="file">
+            <h4>File Comment (Global for this file)</h4>
+            <textarea v-model="fileCommentBody" placeholder="Add a comment for this entire file..."></textarea>
+            <div class="editor-actions">
+                <button class="btn-primary" @click="postFileComment" :disabled="!fileCommentBody.trim() || isSubmitting">Post Comment</button>
+            </div>
+        </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Review Modal -->
+  <div class="modal-overlay" v-if="showReviewModal" @click.self="showReviewModal = false">
+    <div class="modal-content review-modal">
+        <h3>Submit Review</h3>
+        <div class="form-group">
+            <label>Global Comment (optional)</label>
+            <textarea v-model="reviewComment" placeholder="Leave a summary comment..."></textarea>
+        </div>
+        <div class="form-group">
+            <label>Action</label>
+            <div class="review-actions-grid">
+                <label class="action-option" :class="{ active: reviewAction === 'comment' }">
+                    <input type="radio" value="comment" v-model="reviewAction" />
+                    <div class="action-info">
+                        <strong>Comment</strong>
+                        <span>Submit general feedback without approving.</span>
+                    </div>
+                </label>
+                <label class="action-option approve" :class="{ active: reviewAction === 'approve' }">
+                    <input type="radio" value="approve" v-model="reviewAction" />
+                    <div class="action-info">
+                        <strong>Approve</strong>
+                        <span>Submit feedback and approve these changes.</span>
+                    </div>
+                </label>
+                <label class="action-option request-changes" :class="{ active: reviewAction === 'request_changes' }">
+                    <input type="radio" value="request_changes" v-model="reviewAction" />
+                    <div class="action-info">
+                        <strong>{{ store.platform === 'gitlab' ? 'Request Changes' : 'Request Changes' }}</strong>
+                        <span>Submit feedback that must be addressed.</span>
+                    </div>
+                </label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-secondary" @click="showReviewModal = false">Cancel</button>
+            <button class="btn-primary" @click="submitReview" :disabled="isSubmitting">
+                {{ isSubmitting ? 'Submitting...' : 'Submit Review' }}
+            </button>
+        </div>
     </div>
   </div>
 </template>
@@ -1296,10 +1413,25 @@ input:focus + .slider {
   padding: 0.5rem 1rem;
   background: #252526;
   border-bottom: 1px solid #333;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   flex-shrink: 0;
+  gap: 20px;
+}
+.center-controls {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.actions {
+  display: contents;
+}
+.primary-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .view-toggles button {
   background: #333;
@@ -1508,6 +1640,186 @@ input:focus + .slider {
   color: #e6edf3;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* Modal Styling */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-content {
+    background: #252526;
+    border: 1px solid #444;
+    border-radius: 8px;
+    width: 600px;
+    max-width: 90vw;
+    padding: 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.modal-content h3 {
+    margin: 0 0 20px 0;
+    color: #fff;
+}
+.form-group {
+    margin-bottom: 20px;
+}
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    color: #8b949e;
+    font-size: 0.9rem;
+}
+.form-group textarea {
+    width: 100%;
+    height: 120px;
+    background: #1e1e1e;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 12px;
+    color: #ccc;
+    font-family: inherit;
+    resize: vertical;
+}
+.review-actions-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.action-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid #333;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.action-option:hover {
+    background: #2d2d2d;
+}
+.action-option.active {
+    border-color: #007bff;
+    background: rgba(0, 123, 255, 0.1);
+}
+.action-option.approve.active {
+    border-color: #2ea043;
+    background: rgba(46, 160, 67, 0.1);
+}
+.action-option.request-changes.active {
+    border-color: #f85149;
+    background: rgba(248, 81, 73, 0.1);
+}
+.action-option input {
+    margin-top: 4px;
+}
+.action-info strong {
+    display: block;
+    color: #fff;
+    margin-bottom: 2px;
+}
+.action-info span {
+    font-size: 0.8rem;
+    color: #8b949e;
+}
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.btn-review {
+    background: #007bff;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.btn-review:hover {
+    background: #0069d9;
+}
+
+/* File Header & Actions */
+.file-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: #252526;
+    border-bottom: 1px solid #333;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.file-name {
+    font-weight: 600;
+    color: #c9d1d9;
+}
+.file-stats {
+    margin-left: 12px;
+    font-size: 0.8rem;
+    font-family: monospace;
+}
+.file-stats .added { color: #2ea043; }
+.file-stats .deleted { color: #f85149; margin-left: 4px; }
+
+.file-actions {
+    display: flex;
+    gap: 8px;
+}
+.btn-icon {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #333;
+    color: #ccc;
+    border: 1px solid #444;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.btn-icon:hover {
+    background: #444;
+}
+
+.file-comment-editor {
+    padding: 24px;
+    background: #1c2128;
+    border-top: 1px solid #333;
+    margin-top: 24px;
+}
+.file-comment-editor h4 {
+    margin: 0 0 12px 0;
+    font-size: 0.9rem;
+    color: #8b949e;
+}
+.file-comment-editor textarea {
+    width: 100%;
+    height: 100px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 12px;
+    color: #ccc;
+    margin-bottom: 12px;
+    resize: vertical;
+    font-family: inherit;
+}
+.editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
 }
 </style>
 

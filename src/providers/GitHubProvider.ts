@@ -240,6 +240,58 @@ export class GitHubProvider extends BaseProvider {
     return await res.text();
   }
 
+  public async postFileComment(path: string, body: string): Promise<Comment> {
+    const pat = await this.getPat();
+    const headers = { 
+        'Authorization': `Bearer ${pat}`, 
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json' 
+    };
+
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/${this.mrData!.number}/comments`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        body,
+        commit_id: this.mrData!.headSha,
+        path,
+        subject_type: 'file'
+      })
+    });
+    if (!res.ok) throw new Error(`Post file comment failed: ${res.statusText}`);
+    const newNote = await res.json();
+    return {
+        id: newNote.id.toString(),
+        body: newNote.body,
+        author: newNote.user?.login || 'Unknown',
+        avatar_url: newNote.user?.avatar_url,
+        new_path: newNote.path,
+        old_path: newNote.path,
+        new_line: newNote.line,
+        created_at: newNote.created_at,
+        author_id: newNote.user?.id,
+    };
+  }
+
+  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void> {
+    const pat = await this.getPat();
+    const event = action === 'approve' ? 'APPROVE' : action === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT';
+    
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/${this.mrData!.number}/reviews`, {
+      method: 'POST',
+      headers: { 
+          'Authorization': `Bearer ${pat}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({
+        body: comment,
+        event
+      })
+    });
+    if (!res.ok) throw new Error(`Review submission failed: ${res.statusText}`);
+  }
+
   private async fetchAll(url: string, headers: HeadersInit): Promise<any[]> {
     let results: any[] = [];
     let nextUrl: string | null = url;

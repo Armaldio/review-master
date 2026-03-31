@@ -240,6 +240,67 @@ export class GitLabProvider extends BaseProvider {
     return await res.text();
   }
 
+  public async postFileComment(path: string, body: string): Promise<Comment> {
+    const pat = await this.getPat();
+    const res = await fetch(`${this.mrData!.host}/api/v4/projects/${this.mrData!.encodedProjectPath}/merge_requests/${this.mrData!.number}/discussions`, {
+      method: 'POST',
+      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        body,
+        position: {
+          base_sha: this.mrData!.latestVersion.base_commit_sha,
+          head_sha: this.mrData!.latestVersion.head_commit_sha,
+          start_sha: this.mrData!.latestVersion.start_commit_sha,
+          position_type: 'text',
+          new_path: path,
+          old_path: path
+        }
+      })
+    });
+    if (!res.ok) throw new Error(`Post file comment failed: ${res.statusText}`);
+    const discussion = await res.json();
+    const note = discussion.notes[0];
+    return {
+        id: note.id.toString(),
+        body: note.body,
+        author: note.author?.name || note.author?.username || 'Unknown',
+        avatar_url: note.author?.avatar_url,
+        discussion_id: discussion.id,
+        new_path: note.position.new_path,
+        old_path: note.position.old_path,
+        new_line: note.position.new_line,
+        created_at: note.created_at,
+        author_id: note.author?.id,
+        reactions: []
+    };
+  }
+
+  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void> {
+    const pat = await this.getPat();
+    const projectPath = this.mrData!.encodedProjectPath;
+    const iid = this.mrData!.number;
+    const host = this.mrData!.host;
+
+    const payload: any = {};
+    if (comment.trim()) payload.body = comment;
+    
+    if (action === 'approve') {
+        payload.action = 'approve';
+    } else if (action === 'request_changes') {
+        payload.action = 'unapprove';
+    }
+
+    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/reviews`, {
+      method: 'POST',
+      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    if (!res.ok) {
+        throw new Error(`Review submission failed: ${res.statusText}`);
+    }
+  }
+
   private async fetchAll(url: string, pat: string): Promise<any[]> {
     let results: any[] = [];
     let page = 1;
