@@ -56,8 +56,8 @@ const renderDiff = () => {
 
   fileDiffInstance.render({
     fileContainer: containerRef.value,
-    oldFile: props.oldFile,
-    newFile: props.newFile,
+    oldFile: props.oldFile ? { ...props.oldFile, name: props.oldFile.name || "/dev/null" } : undefined,
+    newFile: props.newFile ? { ...props.newFile, name: props.newFile.name || "/dev/null" } : undefined,
     fileDiff: props.fileDiff,
     lineAnnotations: props.lineAnnotations,
   });

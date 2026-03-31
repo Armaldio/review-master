@@ -6,7 +6,7 @@ import { useReviewStore, getLanguage } from "../store";
 import PierreDiff from "../components/PierreDiff.vue";
 import FileTreeItem from "../components/FileTreeItem.vue";
 import type { FileNode } from "../components/FileTreeItem.vue";
-import { parsePatchFiles, parseDiffFromFile } from "@pierre/diffs";
+import { parseDiffFromFile } from "@pierre/diffs";
 import ignore from "ignore";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -82,14 +82,15 @@ const progressPercent = computed(() => {
 });
 
 const displayedFiles = computed(() => {
-  let files = relevantFiles.value;
+  const files = [...relevantFiles.value];
 
-  // Filter out reviewed files unless 'Show all files' is checked
-  if (!showAllFiles.value) {
-    files = files.filter((filePath) => !store.viewedFiles.has(filePath));
-  }
-
-  return files;
+  // Sort: Unviewed first, then viewed
+  return files.sort((a, b) => {
+    const aViewed = store.viewedFiles.has(a);
+    const bViewed = store.viewedFiles.has(b);
+    if (aViewed === bViewed) return a.localeCompare(b);
+    return aViewed ? 1 : -1;
+  });
 });
 
 const fileTree = computed(() => {
@@ -163,16 +164,7 @@ const parsedFileDiff = computed(() => {
   if (contents) {
     try {
       const language = getLanguage(f.new_path).toLowerCase();
-      // Optimization: use the GitLab-provided diff patch if available
-      // This avoids expensive Myer's diff computation on the client.
-      if ((f as any).diff) {
-        const parsed = parsePatchFiles((f as any).diff);
-        if (parsed && parsed.length > 0) {
-          return parsed[0] as any;
-        }
-      }
-
-      // Fallback: calculate diff from full files
+      // Local calculation ONLY (requested by user)
       const metadata = parseDiffFromFile(
         { name: f.old_path || "/dev/null", contents: contents.old, lang: language },
         { name: f.new_path || "/dev/null", contents: contents.new, lang: language },
@@ -627,7 +619,7 @@ const getSemanticDiffOptions = (change: any, overrideLanguage?: string) => ({
 });
 
 const getFileContentFromChange = (contents: string, filePath: string) => ({
-  name: filePath,
+  name: filePath || "/dev/null",
   contents: contents || "",
 });
 
@@ -962,13 +954,7 @@ const lineAnnotations = computed(() => {
           </div>
         </div>
         <div class="sidebar-filters">
-          <div class="filter-group">
-            <span class="filter-label">Show all files</span>
-            <label class="switch">
-              <input type="checkbox" v-model="showAllFiles" />
-              <span class="slider"></span>
-            </label>
-          </div>
+          <!-- Removed showAllFiles toggle as reviewed files are now always visible at the bottom -->
           <div class="filter-group" v-if="store.codeownersRules.length > 0">
             <span class="filter-label">Only my files</span>
             <label class="switch">
@@ -1005,6 +991,7 @@ const lineAnnotations = computed(() => {
           :node="fileTree"
           :selectedFile="store.selectedFile"
           :viewedFiles="store.viewedFiles"
+          :sortViewedToBottom="true"
           @select="selectFile"
         />
       </div>
@@ -1023,6 +1010,12 @@ const lineAnnotations = computed(() => {
           :disabled="isSubmitting"
         >
           Send All
+        </button>
+      </div>
+
+      <div class="global-actions">
+        <button class="btn-review" @click="showReviewModal = true">
+          Submit Review
         </button>
       </div>
     </div>
@@ -1080,9 +1073,6 @@ const lineAnnotations = computed(() => {
           <button class="btn-primary" @click="markAsViewed">
             Mark as Viewed
           </button>
-          <button class="btn-review" @click="showReviewModal = true">
-            Submit Review
-          </button>
         </div>
       </div>
 
@@ -1113,8 +1103,8 @@ const lineAnnotations = computed(() => {
             :lineAnnotations="lineAnnotations"
             :expandedHunks="store.fileExpansionStates[file?.new_path]"
             @expand-hunk="(map) => store.updateExpansionState(file?.new_path, map)"
-            :oldFile="store.fileContents[file?.new_path]?.old ? getFileContentFromChange(store.fileContents[file?.new_path]?.old, file?.old_path) : undefined"
-            :newFile="store.fileContents[file?.new_path]?.new ? getFileContentFromChange(store.fileContents[file?.new_path]?.new, file?.new_path) : undefined"
+            :oldFile="store.fileContents[file?.new_path]?.old ? getFileContentFromChange(store.fileContents[file?.new_path]?.old, file?.old_path || '/dev/null') : undefined"
+            :newFile="store.fileContents[file?.new_path]?.new ? getFileContentFromChange(store.fileContents[file?.new_path]?.new, file?.new_path || '/dev/null') : undefined"
           />
           <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
           <div v-else class="empty-state">Select a file to review</div>
@@ -1245,15 +1235,20 @@ const lineAnnotations = computed(() => {
   color: #ccc;
 }
 .sidebar {
-  width: 300px;
+  width: 320px;
+  background: #252526;
   border-right: 1px solid #333;
   display: flex;
   flex-direction: column;
-  background: #252526;
+  overflow: hidden;
 }
 .sidebar-header {
   padding: 1rem;
   border-bottom: 1px solid #333;
+}
+.file-list, .file-tree {
+  flex: 1;
+  overflow-y: auto;
 }
 .sidebar-header h3 {
   margin: 0 0 1rem 0;
@@ -1885,6 +1880,19 @@ input:focus + .slider {
 .inline-comment-editor textarea:focus {
   outline: none;
   border-color: #58a6ff;
+}
+.primary-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 24px;
+}
+.global-actions {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid #333;
+  justify-content: flex-end;
 }
 .inline-comment-actions {
   display: flex;

@@ -14,6 +14,7 @@ const props = defineProps<{
   selectedFile: string | null;
   viewedFiles: Set<string>;
   depth?: number;
+  sortViewedToBottom?: boolean;
 }>();
 
 const emit = defineEmits(["select"]);
@@ -34,15 +35,32 @@ const handleSelect = (path: string) => {
 
 const sortedChildren = computed(() => {
   if (!props.node.children) return [];
-  return Object.values(props.node.children).sort((a, b) => {
+  const children = Object.values(props.node.children);
+  
+  return children.sort((a, b) => {
+    // Basic sorting: directories first
     if (a.isDir && !b.isDir) return -1;
     if (!a.isDir && b.isDir) return 1;
+    
+    // Optional sorting: viewed to bottom
+    if (props.sortViewedToBottom) {
+      const aViewed = isNodeViewed(a);
+      const bViewed = isNodeViewed(b);
+      if (aViewed !== bViewed) return aViewed ? 1 : -1;
+    }
+    
     return a.name.localeCompare(b.name);
   });
 });
 
+const isNodeViewed = (node: FileNode): boolean => {
+    if (!node.isDir) return props.viewedFiles.has(node.path);
+    if (!node.children || Object.keys(node.children).length === 0) return true;
+    return Object.values(node.children).every(child => isNodeViewed(child));
+};
+
 const isSelected = computed(() => props.node.path === props.selectedFile);
-const isViewed = computed(() => props.viewedFiles.has(props.node.path));
+const isViewed = computed(() => isNodeViewed(props.node));
 const currentDepth = computed(() => props.depth || 0);
 </script>
 
@@ -50,7 +68,7 @@ const currentDepth = computed(() => props.depth || 0);
   <div class="file-tree-node">
     <div 
       class="node-content"
-      :class="{ active: !node.isDir && isSelected, is_dir: node.isDir }"
+      :class="{ active: !node.isDir && isSelected, is_dir: node.isDir, viewed: isViewed }"
       :style="{ paddingLeft: `${currentDepth * 16 + 8}px` }"
       @click="toggleOpen"
       v-show="node.name !== 'root'"
@@ -75,6 +93,7 @@ const currentDepth = computed(() => props.depth || 0);
         :node="child"
         :selectedFile="selectedFile"
         :viewedFiles="viewedFiles"
+        :sortViewedToBottom="sortViewedToBottom"
         :depth="node.name === 'root' ? 0 : currentDepth + 1"
         @select="handleSelect"
       />
@@ -107,6 +126,12 @@ export default {
 .node-content.active {
   background: #37373d;
   color: #fff;
+}
+.node-content.viewed {
+  opacity: 0.5;
+}
+.node-content.viewed:hover {
+  opacity: 0.8;
 }
 .icon-folder {
   margin-right: 6px;
