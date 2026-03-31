@@ -28,9 +28,7 @@ export class GitHubProvider extends BaseProvider {
     const prData = await infoRes.json();
 
     // Fetch PR Files (Diffs)
-    const filesRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=300`, { headers });
-    if (!filesRes.ok) throw new Error(`Failed to fetch PR files: ${filesRes.statusText}`);
-    const ghFiles = await filesRes.json();
+    const ghFiles = await this.fetchAll(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`, headers);
 
     this.diffs = ghFiles.map((f: any) => ({
       new_path: f.filename,
@@ -75,16 +73,15 @@ export class GitHubProvider extends BaseProvider {
       });
       if (res.ok) {
         const content = await res.text();
-        this.codeownersRules = this.parseCodeowners(content);
+        this.codeownersRules = await this.parseCodeowners(content);
         break;
       }
     }
 
     // Fetch Comments
-    const commentsRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=300`, { headers });
+    const ghComments = await this.fetchAll(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`, headers);
     this.remoteComments = [];
-    if (commentsRes.ok) {
-      const ghComments = await commentsRes.json();
+    if (ghComments) {
       for (const c of ghComments) {
         if (c.path && c.line) {
           this.remoteComments.push({
@@ -241,5 +238,24 @@ export class GitHubProvider extends BaseProvider {
         throw new Error(`Failed to fetch file content: ${res.statusText}`);
     }
     return await res.text();
+  }
+
+  private async fetchAll(url: string, headers: HeadersInit): Promise<any[]> {
+    let results: any[] = [];
+    let nextUrl: string | null = url;
+    while (nextUrl) {
+      const res: Response = await fetch(nextUrl, { headers });
+      if (!res.ok) throw new Error(`Fetch all failed: ${res.statusText}`);
+      const data = await res.json();
+      results = results.concat(data);
+      const link: string | null = res.headers.get('Link');
+      if (link) {
+        const match: RegExpMatchArray | null = link.match(/<([^>]+)>; rel="next"/);
+        nextUrl = match ? match[1] : null;
+      } else {
+        nextUrl = null;
+      }
+    }
+    return results;
   }
 }

@@ -19,11 +19,7 @@ export class GitLabProvider extends BaseProvider {
     const encodedProjectPath = encodeURIComponent(projectPath);
 
     // Fetch Diffs
-    const diffsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, {
-      headers: { 'PRIVATE-TOKEN': pat }
-    });
-    if (!diffsRes.ok) throw new Error(`Failed to fetch diffs: ${diffsRes.statusText}`);
-    this.diffs = await diffsRes.json();
+    this.diffs = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, pat);
 
     // Fetch MR info
     const infoRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}`, {
@@ -69,18 +65,15 @@ export class GitLabProvider extends BaseProvider {
       });
       if (res.ok) {
         const content = await res.text();
-        this.codeownersRules = this.parseCodeowners(content);
+        this.codeownersRules = await this.parseCodeowners(content);
         break;
       }
     }
 
     // Fetch Discussions
-    const discussionsRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/discussions`, {
-      headers: { 'PRIVATE-TOKEN': pat }
-    });
+    const discussions = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/discussions`, pat);
     this.remoteComments = [];
-    if (discussionsRes.ok) {
-      const discussions = await discussionsRes.json();
+    if (discussions) {
       for (const discussion of discussions) {
         for (const note of discussion.notes) {
           if (note.position && note.position.new_line) {
@@ -245,5 +238,25 @@ export class GitLabProvider extends BaseProvider {
         throw new Error(`Failed to fetch file content: ${res.statusText}`);
     }
     return await res.text();
+  }
+
+  private async fetchAll(url: string, pat: string): Promise<any[]> {
+    let results: any[] = [];
+    let page = 1;
+    while (true) {
+      const separator = url.includes('?') ? '&' : '?';
+      const pagedUrl = `${url}${separator}per_page=100&page=${page}`;
+      const res: Response = await fetch(pagedUrl, {
+        headers: { 'PRIVATE-TOKEN': pat }
+      });
+      if (!res.ok) throw new Error(`Fetch all failed: ${res.statusText}`);
+      const data = await res.json();
+      if (!data || data.length === 0) break;
+      results = results.concat(data);
+      const nextPage = res.headers.get('x-next-page');
+      if (!nextPage || nextPage === "") break;
+      page = parseInt(nextPage);
+    }
+    return results;
   }
 }

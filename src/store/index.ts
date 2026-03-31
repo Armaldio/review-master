@@ -49,7 +49,9 @@ export const useReviewStore = defineStore('review', () => {
   };
   
   const markFileAsViewed = (filePath: string) => {
-    viewedFiles.value.add(filePath);
+    const next = new Set(viewedFiles.value);
+    next.add(filePath);
+    viewedFiles.value = next;
   };
   
   const selectFile = (filePath: string) => {

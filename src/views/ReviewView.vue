@@ -44,6 +44,13 @@ if (!store.mrData) {
 
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
+const viewedCount = computed(() => store.viewedFiles.size);
+const totalFilesCount = computed(() => modifiedFiles.value.length);
+const progressPercent = computed(() => {
+  if (totalFilesCount.value === 0) return 0;
+  return Math.round((viewedCount.value / totalFilesCount.value) * 100);
+});
+
 const displayedFiles = computed(() => {
   let files = modifiedFiles.value;
 
@@ -880,6 +887,18 @@ const lineAnnotations = computed(() => {
     <div class="sidebar">
       <div class="sidebar-header">
         <h3>Files</h3>
+        <div class="progress-container">
+          <div class="progress-bar-wrapper">
+            <div 
+              class="progress-bar-fill" 
+              :style="{ width: `${progressPercent}%` }"
+            ></div>
+          </div>
+          <div class="progress-text">
+            <span>{{ progressPercent }}% validated</span>
+            <span>{{ viewedCount }} / {{ totalFilesCount }}</span>
+          </div>
+        </div>
         <div class="sidebar-filters">
           <div class="filter-group">
             <span class="filter-label">Show all files</span>
@@ -1104,7 +1123,32 @@ const lineAnnotations = computed(() => {
   border-bottom: 1px solid #333;
 }
 .sidebar-header h3 {
-  margin: 0 0 0.5rem 0;
+  margin: 0 0 1rem 0;
+}
+.progress-container {
+  margin-bottom: 1rem;
+}
+.progress-bar-wrapper {
+  height: 6px;
+  background: #333;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+  position: relative;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2ea043 0%, #3fb950 100%);
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 10px rgba(63, 185, 80, 0.4);
+}
+.progress-text {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #8b949e;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 .toggles {
   display: flex;
