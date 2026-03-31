@@ -68,13 +68,27 @@ const displayedFiles = computed(() => {
     store.codeownersRules.length > 0
   ) {
     const myUsername = `@${store.currentUser.username}`;
+    const myGroups: string[] = store.currentUser.groups || [];
+    
+    console.log(`[Codeowners] Filtering active. User: ${myUsername} | Groups: ${myGroups.join(', ')}`);
 
+    let matchCount = 0;
     files = files.filter((filePath) => {
-      const owners = store.fileOwners[filePath];
-      if (!owners) return false;
-      return owners.includes(myUsername) || 
-             (store.currentUser.groups && owners.some(o => store.currentUser.groups!.includes(o)));
+      const owners = store.fileOwners[filePath] || [];
+      const hasDirectMatch = owners.includes(myUsername);
+      const hasGroupMatch = myGroups.some((g: string) => owners.includes(g));
+      const match = hasDirectMatch || hasGroupMatch;
+      
+      if (match) matchCount++;
+      
+      // Log first 10 for debugging
+      if (files.indexOf(filePath) < 10) {
+          console.log(`[Codeowners] File: ${filePath.split('/').pop()} | Owners: [${owners.join(', ')}] | Match: ${match ? 'YES' : 'NO'}`);
+      }
+      
+      return match;
     });
+    console.log(`[Codeowners] Total matches found: ${matchCount} / ${modifiedFiles.value.length}`);
   }
 
   // Filter out reviewed files unless 'Show all files' is checked

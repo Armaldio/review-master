@@ -100,10 +100,17 @@ const initializeReview = async () => {
 
     // Cache file ownership for all changed files
     if (reviewStore.codeownersRules.length > 0) {
-      console.log(`[Init] Bulk caching ownership for ${reviewStore.diffs.length} files...`);
+      console.log(`[Codeowners] Rules detected: ${reviewStore.codeownersRules.length}`);
       const filePaths = reviewStore.diffs.map(f => f.new_path);
-      reviewStore.fileOwners = await window.electronAPI.matchCodeownersBulk(filePaths, reviewStore.codeownersRules);
+      console.log(`[Codeowners] Matching rules for ${filePaths.length} files...`);
+      
+      const owners = await window.electronAPI.matchCodeownersBulk(filePaths, provider.codeownersRules);
+      reviewStore.fileOwners = owners;
+      
+      console.log('[Codeowners] Bulk match result (samples):', Object.entries(owners).slice(0, 5));
+      console.log('[Codeowners] Current User Profile:', reviewStore.currentUser);
     } else {
+      console.log('[Codeowners] No CODEOWNERS rules found.');
       reviewStore.fileOwners = {};
     }
 

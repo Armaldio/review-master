@@ -51,8 +51,18 @@ export interface MRMetadata {
   headSha: string;
   baseSha: string;
   // Specific to GitLab
+  id?: string | number;
+  description?: string;
+  state?: string;
+  author?: string;
+  author_username?: string;
+  created_at?: string;
+  web_url?: string;
   encodedProjectPath?: string;
   latestVersion?: any;
+  projectNamespace?: string;
+  projectAncestors?: string[];
+  sharedWithGroups?: string[];
 }
 
 export interface CodeownerRule {

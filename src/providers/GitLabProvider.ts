@@ -41,18 +41,32 @@ export class GitLabProvider extends BaseProvider {
     if (!userRes.ok) throw new Error('Failed to fetch user info');
     this.currentUser = await userRes.json();
 
-    // Fetch User Groups
-    const groupsRes = await fetch(`${host}/api/v4/groups?all_available=false&min_access_level=10`, {
-      headers: { 'PRIVATE-TOKEN': pat }
-    });
-    if (groupsRes.ok) {
-      const groups = await groupsRes.json();
-      if (this.currentUser) {
-        this.currentUser.groups = groups.map((g: any) => `@${g.full_path}`);
-      }
+    // Fetch User Groups (Paginated)
+    const patGroups = await window.electronAPI.getSecret('gitlab_pat');
+    const patG = patGroups.success ? patGroups.value : (localStorage.getItem('gitlab_pat') || '');
+    if (!host) throw new Error('Host is missing for GitLab provider initialization');
+    const allGroups = await this.fetchAllGroups(host as string, patG as string);
+    
+    if (this.currentUser) {
+      this.currentUser.groups = allGroups.map((g: any) => `@${g.full_path}`);
+      console.log(`[GitLab] Total memberships fetched: ${allGroups.length}`);
     }
 
-    // Fetch CODEOWNERS via API
+    // Fetch Project Details for Ancestry/Sharing
+    const projectRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}`, {
+      headers: { 'PRIVATE-TOKEN': pat }
+    });
+    if (!projectRes.ok) throw new Error('Failed to fetch project details');
+    const project = await projectRes.json();
+    
+    const ancestors = this.resolveAncestors(project.namespace.full_path);
+    const sharedGroups = (project.shared_with_groups || []).map((g: any) => `@${g.group_full_path}`);
+
+    console.log(`[GitLab] Project Namespace: @${project.namespace.full_path}`);
+    console.log(`[GitLab] Project Ancestors:`, ancestors);
+    console.log(`[GitLab] Shared with groups:`, sharedGroups);
+
+    // 1. Fetch CODEOWNERS first to know which groups are relevant
     const codeownersPaths = [
       'CODEOWNERS',
       '.gitlab/CODEOWNERS',
@@ -67,6 +81,30 @@ export class GitLabProvider extends BaseProvider {
         const content = await res.text();
         this.codeownersRules = await this.parseCodeowners(content);
         break;
+      }
+    }
+
+    // 2. Identify relevant project-related groups that appear in CODEOWNERS
+    const allRuleOwners = new Set<string>();
+    this.codeownersRules.forEach(rule => rule.owners.forEach(o => allRuleOwners.add(o)));
+
+    if (this.currentUser) {
+      const projectRelated = [...ancestors, ...sharedGroups, `@${project.namespace.full_path}`];
+      
+      // Filter for groups that are actually used in CODEOWNERS to avoid unnecessary API calls
+      const candidateGroups = projectRelated.filter(grp => allRuleOwners.has(grp));
+      
+      for (const grp of candidateGroups) {
+          if (!this.currentUser!.groups!.includes(grp)) {
+              console.log(`[GitLab] Verifying membership for candidate group: ${grp}...`);
+              const isMember = await this.checkGroupMembership(host, pat, grp.replace('@', ''), this.currentUser!.id);
+              if (isMember) {
+                  console.log(`[GitLab] Membership verified for ${grp}. Adding to profile.`);
+                  this.currentUser!.groups!.push(grp);
+              } else {
+                  console.log(`[GitLab] User is NOT a member of ${grp}.`);
+              }
+          }
       }
     }
 
@@ -96,7 +134,14 @@ export class GitLabProvider extends BaseProvider {
     }
 
     this.mrData = {
+      id: mrIid,
       title: mrInfo.title,
+      description: mrInfo.description,
+      state: mrInfo.state,
+      author: mrInfo.author.name,
+      author_username: mrInfo.author.username,
+      created_at: mrInfo.created_at,
+      web_url: mrInfo.web_url,
       host,
       owner: '',
       repo: '',
@@ -106,12 +151,75 @@ export class GitLabProvider extends BaseProvider {
       baseSha: latestVersion.base_commit_sha,
       encodedProjectPath,
       latestVersion,
+      projectNamespace: project.namespace.full_path,
+      projectAncestors: ancestors,
+      sharedWithGroups: sharedGroups
     };
+  }
+
+  private resolveAncestors(fullPath: string): string[] {
+    const parts = fullPath.split('/');
+    const ancestors: string[] = [];
+    let current = '';
+    
+    for (let i = 0; i < parts.length - 1; i++) {
+        current = current ? `${current}/${parts[i]}` : parts[i];
+        ancestors.push(`@${current}`);
+    }
+    return ancestors;
+  }
+
+  private async fetchAllGroups(host: string, pat: string): Promise<any[]> {
+    let allGroups: any[] = [];
+    let page = 1;
+    const perPage = 100;
+    let hasNextPage = true;
+
+    while (hasNextPage) {
+      const res = await fetch(`${host}/api/v4/groups?all_available=false&min_access_level=10&per_page=${perPage}&page=${page}`, {
+        headers: { 'PRIVATE-TOKEN': pat }
+      });
+      
+      if (!res.ok) {
+        console.error(`[GitLab] Error fetching groups (page ${page}): ${res.statusText}`);
+        break;
+      }
+
+      const groups = await res.json();
+      allGroups = allGroups.concat(groups);
+
+      const nextPage = res.headers.get('x-next-page');
+      if (nextPage && groups.length === perPage) {
+        page = parseInt(nextPage, 10);
+      } else {
+        hasNextPage = false;
+      }
+    }
+
+    return allGroups;
+  }
+
+  private async checkGroupMembership(host: string, pat: string, groupPath: string, userId: string | number): Promise<boolean> {
+    try {
+      const encodedPath = encodeURIComponent(groupPath);
+      const res = await fetch(`${host}/api/v4/groups/${encodedPath}/members/all?user_ids=${userId}`, {
+        headers: { 'PRIVATE-TOKEN': pat }
+      });
+      
+      if (res.ok) {
+        const members = await res.json();
+        return members.length > 0;
+      }
+      return false;
+    } catch (e) {
+      console.error(`[GitLab] Membership check failed for ${groupPath}:`, e);
+      return false;
+    }
   }
 
   private groupReactions(awardEmoji: any[]): any[] {
     const grouped: Record<string, { name: string, count: number, users: string[] }> = {};
-    
+
     awardEmoji.forEach(e => {
       const char = e.name === 'thumbsup' ? '👍' : e.name === 'thumbsdown' ? '👎' : (e.emoji || e.name);
       if (!grouped[char]) {
@@ -148,16 +256,16 @@ export class GitLabProvider extends BaseProvider {
     const discussion = await res.json();
     const note = discussion.notes[0];
     return {
-        id: note.id.toString(),
-        body: note.body,
-        author: note.author?.name || note.author?.username || 'Unknown',
-        avatar_url: note.author?.avatar_url,
-        discussion_id: discussion.id,
-        new_path: note.position.new_path,
-        old_path: note.position.old_path,
-        new_line: note.position.new_line,
-        created_at: note.created_at,
-        author_id: note.author?.id,
+      id: note.id.toString(),
+      body: note.body,
+      author: note.author?.name || note.author?.username || 'Unknown',
+      avatar_url: note.author?.avatar_url,
+      discussion_id: discussion.id,
+      new_path: note.position.new_path,
+      old_path: note.position.old_path,
+      new_line: note.position.new_line,
+      created_at: note.created_at,
+      author_id: note.author?.id,
     };
   }
 
@@ -171,16 +279,16 @@ export class GitLabProvider extends BaseProvider {
     if (!res.ok) throw new Error(`Reply failed: ${res.statusText}`);
     const note = await res.json();
     return {
-        id: note.id.toString(),
-        body: note.body,
-        author: note.author?.name || note.author?.username || 'Unknown',
-        avatar_url: note.author?.avatar_url,
-        discussion_id: baseComment.discussion_id,
-        new_path: baseComment.new_path,
-        old_path: baseComment.old_path,
-        new_line: baseComment.new_line,
-        created_at: note.created_at,
-        author_id: note.author?.id,
+      id: note.id.toString(),
+      body: note.body,
+      author: note.author?.name || note.author?.username || 'Unknown',
+      avatar_url: note.author?.avatar_url,
+      discussion_id: baseComment.discussion_id,
+      new_path: baseComment.new_path,
+      old_path: baseComment.old_path,
+      new_line: baseComment.new_line,
+      created_at: note.created_at,
+      author_id: note.author?.id,
     };
   }
 
@@ -207,14 +315,14 @@ export class GitLabProvider extends BaseProvider {
     const char = emojiName === 'thumbsup' ? '👍' : emojiName === 'thumbsdown' ? '👎' : emojiName;
     const existing = comment.reactions.find((r: any) => r.name === char);
     if (existing) {
-        existing.count++;
-        if (this.currentUser?.name) existing.users.push(this.currentUser.name);
+      existing.count++;
+      if (this.currentUser?.name) existing.users.push(this.currentUser.name);
     } else {
-        comment.reactions.push({ 
-            name: char, 
-            count: 1, 
-            users: this.currentUser?.name ? [this.currentUser.name] : [] 
-        });
+      comment.reactions.push({
+        name: char,
+        count: 1,
+        users: this.currentUser?.name ? [this.currentUser.name] : []
+      });
     }
   }
 
@@ -234,8 +342,8 @@ export class GitLabProvider extends BaseProvider {
       headers: { 'PRIVATE-TOKEN': pat! }
     });
     if (!res.ok) {
-        if (res.status === 404) return '';
-        throw new Error(`Failed to fetch file content: ${res.statusText}`);
+      if (res.status === 404) return '';
+      throw new Error(`Failed to fetch file content: ${res.statusText}`);
     }
     return await res.text();
   }
@@ -261,17 +369,17 @@ export class GitLabProvider extends BaseProvider {
     const discussion = await res.json();
     const note = discussion.notes[0];
     return {
-        id: note.id.toString(),
-        body: note.body,
-        author: note.author?.name || note.author?.username || 'Unknown',
-        avatar_url: note.author?.avatar_url,
-        discussion_id: discussion.id,
-        new_path: note.position.new_path,
-        old_path: note.position.old_path,
-        new_line: note.position.new_line,
-        created_at: note.created_at,
-        author_id: note.author?.id,
-        reactions: []
+      id: note.id.toString(),
+      body: note.body,
+      author: note.author?.name || note.author?.username || 'Unknown',
+      avatar_url: note.author?.avatar_url,
+      discussion_id: discussion.id,
+      new_path: note.position.new_path,
+      old_path: note.position.old_path,
+      new_line: note.position.new_line,
+      created_at: note.created_at,
+      author_id: note.author?.id,
+      reactions: []
     };
   }
 
@@ -283,11 +391,11 @@ export class GitLabProvider extends BaseProvider {
 
     const payload: any = {};
     if (comment.trim()) payload.body = comment;
-    
+
     if (action === 'approve') {
-        payload.action = 'approve';
+      payload.action = 'approve';
     } else if (action === 'request_changes') {
-        payload.action = 'unapprove';
+      payload.action = 'unapprove';
     }
 
     const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/reviews`, {
@@ -295,9 +403,9 @@ export class GitLabProvider extends BaseProvider {
       headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    
+
     if (!res.ok) {
-        throw new Error(`Review submission failed: ${res.statusText}`);
+      throw new Error(`Review submission failed: ${res.statusText}`);
     }
   }
 
