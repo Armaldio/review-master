@@ -393,7 +393,7 @@ export class GitLabProvider extends BaseProvider {
       payload.action = 'unapprove';
     }
 
-    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/reviews`, {
+    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/review`, {
       method: 'POST',
       headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
