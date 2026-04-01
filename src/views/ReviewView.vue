@@ -1117,122 +1117,120 @@ const lineAnnotations = computed(() => {
 
 <template>
   <div class="review-container">
-    <div 
-      class="file-sidebar" 
-      :class="{ 'flash': store.sidebarFlash }"
-      :style="{ width: sidebarWidth + 'px' }"
-    >
-      <div class="sidebar-tabs">
-        <button 
-          :class="{ active: sidebarTab === 'files' }" 
-          @click="sidebarTab = 'files'"
-        >
-          Files
-        </button>
-        <button 
-          :class="{ active: sidebarTab === 'discussions' }" 
-          @click="sidebarTab = 'discussions'"
-        >
-          Discussions
-          <span v-if="unresolvedCount > 0" class="tab-badge">{{ unresolvedCount }}</span>
-        </button>
-      </div>
+    <div class="sidebar" :style="{ width: sidebarWidth + 'px' }">
+      <div class="sidebar-scrollable">
+        <div class="sidebar-tabs">
+          <button 
+            :class="{ active: sidebarTab === 'files' }" 
+            @click="sidebarTab = 'files'"
+          >
+            Files
+          </button>
+          <button 
+            :class="{ active: sidebarTab === 'discussions' }" 
+            @click="sidebarTab = 'discussions'"
+          >
+            Discussions
+            <span v-if="unresolvedCount > 0" class="tab-badge">{{ unresolvedCount }}</span>
+          </button>
+        </div>
 
-      <div class="sidebar-header" v-if="sidebarTab === 'files'">
-        <div class="search-container">
-          <input 
-            type="text" 
-            v-model="searchQuery" 
-            placeholder="Search files..." 
-            class="sidebar-search"
-          />
-        </div>
-        <div class="progress-container">
-          <div class="progress-bar-wrapper">
-            <div 
-              class="progress-bar-fill" 
-              :style="{ width: `${progressPercent}%` }"
-            ></div>
+        <div class="sidebar-header" v-if="sidebarTab === 'files'">
+          <div class="search-container">
+            <input 
+              type="text" 
+              v-model="searchQuery" 
+              placeholder="Search files..." 
+              class="sidebar-search"
+            />
           </div>
-          <div class="progress-text">
-            <span>{{ progressPercent }}% validated</span>
-            <span>{{ viewedCount }} / {{ totalFilesCount }}</span>
+          <div class="progress-container">
+            <div class="progress-bar-wrapper">
+              <div 
+                class="progress-bar-fill" 
+                :style="{ width: `${progressPercent}%` }"
+              ></div>
+            </div>
+            <div class="progress-text">
+              <span>{{ progressPercent }}% validated</span>
+              <span>{{ viewedCount }} / {{ totalFilesCount }}</span>
+            </div>
           </div>
-        </div>
-        <div class="sidebar-filters">
-          <!-- Removed showAllFiles toggle as reviewed files are now always visible at the bottom -->
-          <div class="filter-group" v-if="store.codeownersRules.length > 0">
-            <span class="filter-label">Only my files</span>
-            <label class="switch">
-              <input type="checkbox" v-model="showOnlyMyFiles" />
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div class="filter-group">
-            <span class="filter-label">Tree view</span>
-            <label class="switch">
-              <input type="checkbox" v-model="useTreeView" />
-              <span class="slider"></span>
-            </label>
+          <div class="sidebar-filters">
+            <!-- Removed showAllFiles toggle as reviewed files are now always visible at the bottom -->
+            <div class="filter-group" v-if="store.codeownersRules.length > 0">
+              <span class="filter-label">Only my files</span>
+              <label class="switch">
+                <input type="checkbox" v-model="showOnlyMyFiles" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label">Tree view</span>
+              <label class="switch">
+                <input type="checkbox" v-model="useTreeView" />
+                <span class="slider"></span>
+              </label>
+            </div>
           </div>
         </div>
-      </div>
 
-      <ul class="file-list" v-if="sidebarTab === 'files' && !useTreeView">
-        <li
-          v-for="file in displayedFiles"
-          :key="file"
-          :class="{
-            active: store.selectedFile === file,
-            viewed: !!store.viewedFiles[file],
-          }"
-          @click="selectFile(file)"
-        >
-          <span class="status-dot"></span>
-          <span class="file-name-text">{{ file.split("/").pop() }}</span>
-          <div class="file-badges" v-if="store.commentStatsByFile[file]">
-            <span 
-              class="badge-unresolved" 
-              v-if="store.commentStatsByFile[file].unresolved > 0"
-            >
-              {{ store.commentStatsByFile[file].unresolved }}
-            </span>
-          </div>
-        </li>
-      </ul>
-      <div class="file-tree" v-else-if="sidebarTab === 'files' && useTreeView">
-        <FileTreeItem
-          :node="fileTree"
-          :selectedFile="store.selectedFile"
-          :viewedFiles="store.viewedFiles"
-          :sortViewedToBottom="true"
-          :commentStats="store.commentStatsByFile"
-          @select="selectFile"
-        />
-      </div>
-
-      <div class="discussions-panel" v-if="sidebarTab === 'discussions'">
-        <DiscussionsList />
-      </div>
-
-      <div class="batch-panel" v-if="store.batchedComments.length > 0">
-        <h3>Batched Comments ({{ store.batchedComments.length }})</h3>
-        <div v-if="orphanedComments.length > 0" class="orphaned-warning">
-            ⚠️ {{ orphanedComments.length }} comments on deleted/moved files
-        </div>
-        <ul class="batch-list">
-          <li v-for="c in store.batchedComments" :key="c.id">
-            Line {{ c.new_line }}: {{ c.body.substring(0, 20) }}...
-            <button @click="store.removeBatchedComment(c.id)">X</button>
+        <ul class="file-list" v-if="sidebarTab === 'files' && !useTreeView">
+          <li
+            v-for="file in displayedFiles"
+            :key="file"
+            :class="{
+              active: store.selectedFile === file,
+              viewed: !!store.viewedFiles[file],
+            }"
+            @click="selectFile(file)"
+          >
+            <span class="status-dot"></span>
+            <span class="file-name-text">{{ file.split("/").pop() }}</span>
+            <div class="file-badges" v-if="store.commentStatsByFile[file]">
+              <span 
+                class="badge-unresolved" 
+                v-if="store.commentStatsByFile[file].unresolved > 0"
+              >
+                {{ store.commentStatsByFile[file].unresolved }}
+              </span>
+            </div>
           </li>
         </ul>
-        <button
-          class="btn-primary"
-          @click="sendBatchComments"
-          :disabled="isSubmitting"
-        >
-          Send All
-        </button>
+        <div class="file-tree" v-else-if="sidebarTab === 'files' && useTreeView">
+          <FileTreeItem
+            :node="fileTree"
+            :selectedFile="store.selectedFile"
+            :viewedFiles="store.viewedFiles"
+            :sortViewedToBottom="true"
+            :commentStats="store.commentStatsByFile"
+            @select="selectFile"
+          />
+        </div>
+
+        <div class="discussions-panel" v-if="sidebarTab === 'discussions'">
+          <DiscussionsList />
+        </div>
+
+        <div class="batch-panel" v-if="store.batchedComments.length > 0">
+          <h3>Batched Comments ({{ store.batchedComments.length }})</h3>
+          <div v-if="orphanedComments.length > 0" class="orphaned-warning">
+              ⚠️ {{ orphanedComments.length }} comments on deleted/moved files
+          </div>
+          <ul class="batch-list">
+            <li v-for="c in store.batchedComments" :key="c.id">
+              Line {{ c.new_line }}: {{ c.body.substring(0, 20) }}...
+              <button @click="store.removeBatchedComment(c.id)">X</button>
+            </li>
+          </ul>
+          <button
+            class="btn-primary"
+            @click="sendBatchComments"
+            :disabled="isSubmitting"
+          >
+            Send All
+          </button>
+        </div>
       </div>
 
       <div class="global-actions">
@@ -1505,6 +1503,12 @@ const lineAnnotations = computed(() => {
   overflow: hidden;
   flex-shrink: 0;
   position: relative;
+}
+.sidebar-scrollable {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .resizer {
   width: 4px;
