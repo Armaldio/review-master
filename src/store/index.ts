@@ -69,6 +69,44 @@ export const useReviewStore = defineStore('review', () => {
   const sidebarFlash = ref(false);
   const lastPolledAt = ref<string | null>(null);
 
+  // --- Computed Analytics ---
+
+  /**
+   * Flat list of all unique threads (discussions) across all files.
+   * Groups comments by location if they belong to the same thread ID (if provider supports it),
+   * otherwise treats each remote comment as a potential discussion point.
+   */
+  const allDiscussions = computed(() => {
+    // For now, we'll treat each remote comment as a discussion point.
+    // In many providers, 'remoteComments' are already thread-parent or we have a flat list.
+    return [...remoteComments.value].sort((a, b) => 
+      new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    );
+  });
+
+  /**
+   * Map of file paths to comment statistics (unresolved, total).
+   */
+  const commentStatsByFile = computed(() => {
+    const stats: Record<string, { unresolved: number; total: number }> = {};
+    
+    remoteComments.value.forEach(comment => {
+      const path = comment.new_path;
+      if (!path) return;
+      
+      if (!stats[path]) {
+        stats[path] = { unresolved: 0, total: 0 };
+      }
+      
+      stats[path].total++;
+      if (!comment.resolved) {
+        stats[path].unresolved++;
+      }
+    });
+    
+    return stats;
+  });
+
   const migrateLegacyAccounts = async () => {
     // Check if we already have accounts or if we need to migrate
     if (accounts.value.length > 0) return;
@@ -569,6 +607,8 @@ export const useReviewStore = defineStore('review', () => {
     sidebarFlash,
     lastPolledAt,
     startPolling,
-    stopPolling
+    stopPolling,
+    allDiscussions,
+    commentStatsByFile
   };
 });

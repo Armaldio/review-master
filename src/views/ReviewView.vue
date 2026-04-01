@@ -7,6 +7,8 @@ import { useReviewStore, getLanguage } from "../store";
 import PierreDiff from "../components/PierreDiff.vue";
 import FileTreeItem from "../components/FileTreeItem.vue";
 import type { FileNode } from "../components/FileTreeItem.vue";
+import DiscussionsList from "../components/DiscussionsList.vue";
+import EmptyState from "../components/EmptyState.vue";
 import { parseDiffFromFile } from "@pierre/diffs";
 import ignore from "ignore";
 import { marked } from "marked";
@@ -27,6 +29,25 @@ const isRefreshing = ref(false);
 
 const sidebarWidth = useStorage("review_sidebar_width", 320);
 const isResizing = ref(false);
+const searchQuery = ref("");
+const sidebarTab = ref<"files" | "discussions">("files");
+
+// --- Navigation ---
+const goToPrevFile = () => {
+  const files = displayedFiles.value;
+  if (files.length <= 1) return;
+  const currentIndex = files.indexOf(store.selectedFile!);
+  const prevIndex = (currentIndex - 1 + files.length) % files.length;
+  selectFile(files[prevIndex]);
+};
+
+const goToNextFile = () => {
+  const files = displayedFiles.value;
+  if (files.length <= 1) return;
+  const currentIndex = files.indexOf(store.selectedFile!);
+  const nextIndex = (currentIndex + 1) % files.length;
+  selectFile(files[nextIndex]);
+};
 
 // Track manual expansion/collapse of threads
 const expandedThreads = ref<Set<string>>(new Set());
@@ -98,22 +119,27 @@ const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 const relevantFiles = computed(() => {
   let files = modifiedFiles.value;
 
-  if (
-    showOnlyMyFiles.value &&
-    store.currentUser &&
-    store.codeownersRules.length > 0
-  ) {
-    const myUsername = `@${store.currentUser.username}`;
-    const myGroups: string[] = store.currentUser.groups || [];
-    files = files.filter((filePath) => {
-      const owners = store.fileOwners[filePath] || [];
-      const hasDirectMatch = owners.includes(myUsername);
-      const hasGroupMatch = myGroups.some((g: string) => owners.includes(g));
-      return hasDirectMatch || hasGroupMatch;
-    });
+  if (showOnlyMyFiles.value && store.codeownersRules.length > 0) {
+    const username = store.currentUser?.username;
+    if (username) {
+      files = files.filter((f) => {
+        const owners = store.fileOwners[f] || [];
+        return owners.includes(username);
+      });
+    }
+  }
+
+  // Filter by search query
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.toLowerCase();
+    files = files.filter(f => f.toLowerCase().includes(q));
   }
 
   return files;
+});
+
+const unresolvedCount = computed(() => {
+  return store.remoteComments.filter(c => !c.resolved).length;
 });
 
 const totalFilesCount = computed(() => relevantFiles.value.length);
@@ -137,18 +163,8 @@ const displayedFiles = computed(() => {
 });
 
 const fileTree = computed(() => {
-  const root: FileNode = { name: 'root', path: '', isDir: true, children: {}, commentCount: 0 };
+  const root: FileNode = { name: 'root', path: '', isDir: true, children: {} };
 
-  // 1. Map each file to its comment counts
-  const countsByFile: Record<string, number> = {};
-  for (const c of store.remoteComments) {
-    countsByFile[c.new_path] = (countsByFile[c.new_path] || 0) + 1;
-  }
-  for (const c of store.batchedComments) {
-    countsByFile[c.new_path] = (countsByFile[c.new_path] || 0) + 1;
-  }
-
-  // 2. Build the tree structure
   for (const filePath of displayedFiles.value) {
     const parts = filePath.split('/');
     let current = root;
@@ -164,31 +180,11 @@ const fileTree = computed(() => {
                 path: currentPath,
                 isDir: i < parts.length - 1,
                 children: i < parts.length - 1 ? {} : undefined,
-                commentCount: 0
             };
         }
         current = current.children![part];
-        if (i === parts.length - 1) {
-            current.commentCount = countsByFile[filePath] || 0;
-        }
     }
   }
-
-  // 3. Roll up counts for directories
-  const rollout = (node: FileNode): number => {
-    if (!node.isDir) return node.commentCount || 0;
-
-    let total = 0;
-    if (node.children) {
-        for (const childName in node.children) {
-            total += rollout(node.children[childName]);
-        }
-    }
-    node.commentCount = total;
-    return total;
-  };
-
-  rollout(root);
 
   return root;
 });
@@ -1114,8 +1110,31 @@ const lineAnnotations = computed(() => {
       :class="{ 'flash': store.sidebarFlash }"
       :style="{ width: sidebarWidth + 'px' }"
     >
-      <div class="sidebar-header">
-        <h3>Files</h3>
+      <div class="sidebar-tabs">
+        <button 
+          :class="{ active: sidebarTab === 'files' }" 
+          @click="sidebarTab = 'files'"
+        >
+          Files
+        </button>
+        <button 
+          :class="{ active: sidebarTab === 'discussions' }" 
+          @click="sidebarTab = 'discussions'"
+        >
+          Discussions
+          <span v-if="unresolvedCount > 0" class="tab-badge">{{ unresolvedCount }}</span>
+        </button>
+      </div>
+
+      <div class="sidebar-header" v-if="sidebarTab === 'files'">
+        <div class="search-container">
+          <input 
+            type="text" 
+            v-model="searchQuery" 
+            placeholder="Search files..." 
+            class="sidebar-search"
+          />
+        </div>
         <div class="progress-container">
           <div class="progress-bar-wrapper">
             <div 
@@ -1147,7 +1166,7 @@ const lineAnnotations = computed(() => {
         </div>
       </div>
 
-      <ul class="file-list" v-if="!useTreeView">
+      <ul class="file-list" v-if="sidebarTab === 'files' && !useTreeView">
         <li
           v-for="file in displayedFiles"
           :key="file"
@@ -1158,17 +1177,33 @@ const lineAnnotations = computed(() => {
           @click="selectFile(file)"
         >
           <span class="status-dot"></span>
-          {{ file.split("/").pop() }}
+          <span class="file-name-text">{{ file.split("/").pop() }}</span>
+          <div class="file-badges" v-if="store.commentStatsByFile[file]">
+            <span 
+              class="badge-unresolved" 
+              v-if="store.commentStatsByFile[file].unresolved > 0"
+            >
+              {{ store.commentStatsByFile[file].unresolved }}
+            </span>
+            <span class="badge-total" v-else>
+              {{ store.commentStatsByFile[file].total }}
+            </span>
+          </div>
         </li>
       </ul>
-      <div class="file-tree" v-else>
+      <div class="file-tree" v-else-if="sidebarTab === 'files' && useTreeView">
         <FileTreeItem
           :node="fileTree"
           :selectedFile="store.selectedFile"
           :viewedFiles="store.viewedFiles"
           :sortViewedToBottom="true"
+          :commentStats="store.commentStatsByFile"
           @select="selectFile"
         />
+      </div>
+
+      <div class="discussions-panel" v-if="sidebarTab === 'discussions'">
+        <DiscussionsList />
       </div>
 
       <div class="batch-panel" v-if="store.batchedComments.length > 0">
@@ -1202,9 +1237,27 @@ const lineAnnotations = computed(() => {
 
     <div class="main-content">
       <div class="toolbar">
-        <button class="btn-secondary" @click="exitReview">
-          Exit Review
-        </button>
+        <div class="toolbar-left">
+          <button class="btn-secondary" @click="exitReview">
+            Exit Review
+          </button>
+          <div class="nav-cluster">
+            <button 
+              class="btn-nav" 
+              @click="goToPrevFile" 
+              title="Previous file"
+            >
+              ←
+            </button>
+            <button 
+              class="btn-nav" 
+              @click="goToNextFile" 
+              title="Next file"
+            >
+              →
+            </button>
+          </div>
+        </div>
 
         <div class="center-controls">
           <div class="view-toggles">
@@ -1423,6 +1476,8 @@ const lineAnnotations = computed(() => {
         </div>
     </div>
   </div>
+
+  <EmptyState v-if="!store.selectedFile && sidebarTab === 'files' && !isRefreshing" />
 </template>
 
 <style scoped>
@@ -2459,5 +2514,120 @@ input:focus + .slider {
     box-shadow: inset 0 0 0 0 rgba(88, 166, 255, 0);
     background-color: transparent;
   }
+}
+
+/* New Refinement Styles */
+.sidebar-tabs {
+  display: flex;
+  background: #252526;
+  border-bottom: 1px solid #333;
+}
+.sidebar-tabs button {
+  flex: 1;
+  padding: 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.sidebar-tabs button.active {
+  color: #fff;
+  border-bottom-color: #007bff;
+  background: rgba(255, 255, 255, 0.05);
+}
+.tab-badge {
+  background: #f85149;
+  color: white;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.search-container {
+  padding: 12px;
+  border-bottom: 1px solid #333;
+}
+.sidebar-search {
+  width: 100%;
+  padding: 6px 10px;
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #eee;
+  font-size: 0.85rem;
+}
+.sidebar-search:focus {
+  outline: none;
+  border-color: #007bff;
+}
+
+.file-name-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-badges {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+.badge-unresolved {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+}
+.badge-total {
+  background: rgba(139, 148, 158, 0.1);
+  color: #8b949e;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.nav-cluster {
+  display: flex;
+  gap: 4px;
+}
+.btn-nav {
+  background: #333;
+  color: #ccc;
+  border: 1px solid #444;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+.btn-nav:hover {
+  background: #444;
+  color: #fff;
+}
+.btn-nav:active {
+  background: #555;
+}
+
+.discussions-panel {
+  flex: 1;
+  overflow-y: auto;
 }
 </style>

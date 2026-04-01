@@ -15,6 +15,7 @@ const props = defineProps<{
   viewedFiles: Record<string, string>;
   depth?: number;
   sortViewedToBottom?: boolean;
+  commentStats?: Record<string, { unresolved: number; total: number }>;
 }>();
 
 const emit = defineEmits(["select"]);
@@ -62,6 +63,33 @@ const isNodeViewed = (node: FileNode): boolean => {
 const isSelected = computed(() => props.node.path === props.selectedFile);
 const isViewed = computed(() => isNodeViewed(props.node));
 const currentDepth = computed(() => props.depth || 0);
+
+const nodeCommentStats = computed(() => {
+  if (!props.commentStats) return null;
+  // If it's a file, return its stats
+  if (!props.node.isDir) {
+    return props.commentStats[props.node.path] || null;
+  }
+  
+  // If it's a directory, aggregate stats from all descendants
+  let unresolved = 0;
+  let total = 0;
+  
+  const aggregate = (n: FileNode) => {
+    if (!n.isDir) {
+      const s = props.commentStats![n.path];
+      if (s) {
+        unresolved += s.unresolved;
+        total += s.total;
+      }
+    } else if (n.children) {
+      Object.values(n.children).forEach(aggregate);
+    }
+  };
+  
+  aggregate(props.node);
+  return total > 0 ? { unresolved, total } : null;
+});
 </script>
 
 <template>
@@ -80,8 +108,16 @@ const currentDepth = computed(() => props.depth || 0);
         <span class="status-dot" :class="{ viewed: isViewed }"></span>
       </div>
       <span class="node-name">{{ node.name }}</span>
-      <div v-if="node.commentCount && node.commentCount > 0" class="comment-badge">
-        {{ node.commentCount }}
+      <div v-if="nodeCommentStats" class="file-badges">
+        <span 
+          class="badge-unresolved" 
+          v-if="nodeCommentStats.unresolved > 0"
+        >
+          {{ nodeCommentStats.unresolved }}
+        </span>
+        <span class="badge-total" v-else>
+          {{ nodeCommentStats.total }}
+        </span>
       </div>
     </div>
     
@@ -94,6 +130,7 @@ const currentDepth = computed(() => props.depth || 0);
         :selectedFile="selectedFile"
         :viewedFiles="viewedFiles"
         :sortViewedToBottom="sortViewedToBottom"
+        :commentStats="commentStats"
         :depth="node.name === 'root' ? 0 : currentDepth + 1"
         @select="handleSelect"
       />
@@ -159,16 +196,29 @@ export default {
 }
 .node-name {
   flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.comment-badge {
-  background: #007acc;
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: bold;
+
+.file-badges {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+.badge-unresolved {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  font-size: 10px;
   padding: 1px 6px;
-  border-radius: 10px;
-  min-width: 14px;
-  text-align: center;
-  margin-left: 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+}
+.badge-total {
+  background: rgba(139, 148, 158, 0.1);
+  color: #8b949e;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
 }
 </style>

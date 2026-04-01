@@ -205,6 +205,7 @@ input {
   border: 1px solid #333;
   border-radius: 8px;
   font-size: 0.95rem;
+  text-align: left;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 input:focus {
