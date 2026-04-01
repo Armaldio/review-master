@@ -2,7 +2,6 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useReviewStore } from '../store';
-import SecurityBanner from '../components/SecurityBanner.vue';
 
 const router = useRouter();
 const store = useReviewStore();
@@ -47,7 +46,6 @@ const removeAccount = async (id: string) => {
 
 <template>
   <div class="settings-container">
-    <SecurityBanner />
     <div class="header">
       <h2>Account Settings</h2>
       <button v-if="!isAdding" class="add-btn" @click="isAdding = true">+ Add Account</button>
