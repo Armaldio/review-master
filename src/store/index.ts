@@ -36,17 +36,26 @@ export const useReviewStore = defineStore('review', () => {
   // Use persistent storage for viewed files, keyed by MR ID
   const viewedFiles = ref<Record<string, string>>({});
   
-  // Watch for mrData.id changes to load/save viewed files
+  // Watch for mrData.id changes to load viewed files
   watch(() => mrData.value?.id, (newId) => {
     if (newId) {
-      const storage = useStorage<Record<string, string>>(`viewed_files_${newId}`, {});
-      viewedFiles.value = storage.value;
-      // Sync back to storage when changed
-      watch(viewedFiles, (v) => { storage.value = v; }, { deep: true });
+      const saved = localStorage.getItem(`viewed_files_${newId}`);
+      try {
+        viewedFiles.value = saved ? JSON.parse(saved) : {};
+      } catch (e) {
+        viewedFiles.value = {};
+      }
     } else {
       viewedFiles.value = {};
     }
   }, { immediate: true });
+
+  // Sync viewedFiles to storage whenever it changes
+  watch(viewedFiles, (v) => {
+    if (mrData.value?.id) {
+        localStorage.setItem(`viewed_files_${mrData.value.id}`, JSON.stringify(v));
+    }
+  }, { deep: true });
 
   const selectedFile = ref<string | null>(null);
   const batchedComments = ref<any[]>([]);

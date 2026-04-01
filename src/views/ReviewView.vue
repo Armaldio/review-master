@@ -120,11 +120,14 @@ const relevantFiles = computed(() => {
   let files = modifiedFiles.value;
 
   if (showOnlyMyFiles.value && store.codeownersRules.length > 0) {
-    const username = store.currentUser?.username;
-    if (username) {
+    const user = store.currentUser;
+    if (user) {
+      // Possible "handles" for the current user in CODEOWNERS are @username and any groups/teams they belong to
+      const myHandles = new Set([`@${user.username}`, ...(user.groups || [])]);
+      
       files = files.filter((f) => {
         const owners = store.fileOwners[f] || [];
-        return owners.includes(username);
+        return owners.some(owner => myHandles.has(owner));
       });
     }
   }
