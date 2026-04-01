@@ -28,22 +28,13 @@ export abstract class BaseProvider {
       return null;
     }
     
-    const res = await (window as any).electronAPI.getSecret(key);
-    if (res.success && res.value) {
-      console.log(`[BaseProvider] Successfully retrieved secret for ${key} from secure storage.`);
-      return res.value;
+    const token = localStorage.getItem(key);
+    if (!token) {
+      console.error(`[BaseProvider] No token found for ${key} in localStorage.`);
+      return null;
     }
     
-    console.error(`[BaseProvider] Failed to retrieve secret for ${key}:`, res.error || 'Unknown error');
-    
-    const fallback = localStorage.getItem(key);
-    if (fallback) {
-      console.warn(`[BaseProvider] Falling back to localStorage for ${key}. This is less secure.`);
-      return fallback;
-    }
-    
-    console.error(`[BaseProvider] No token found for ${key} in either secure storage or localStorage.`);
-    return null;
+    return token;
   }
 
   /**

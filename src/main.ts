@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
 import { parse, matchFile } from 'codeowners-utils';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -131,89 +131,6 @@ app.on('ready', () => {
     } catch (error) {
       console.error('Error cloning repo:', error);
       return { success: false, error: (error as Error).message };
-    }
-  });
-
-  // --- Secrets Storage IPC Handlers (safeStorage) ---
-  const SECRETS_FILE = path.join(app.getPath('userData'), 'secrets.json');
-  console.log(`[Secrets] Storage file path: ${SECRETS_FILE}`);
-
-  async function readSecrets() {
-    try {
-      const data = await fs.readFile(SECRETS_FILE, 'utf-8');
-      if (!data) return {};
-      return JSON.parse(data);
-    } catch (error: any) {
-      if (error.code !== 'ENOENT') {
-        console.error(`[Secrets] Error reading secrets file:`, error.message);
-      }
-      return {};
-    }
-  }
-
-  async function writeSecrets(secrets: Record<string, string>) {
-    try {
-      await fs.mkdir(path.dirname(SECRETS_FILE), { recursive: true });
-      await fs.writeFile(SECRETS_FILE, JSON.stringify(secrets, null, 2));
-      console.log(`[Secrets] Successfully wrote secrets to file`);
-    } catch (error: any) {
-      console.error(`[Secrets] Error writing secrets file:`, error.message);
-      throw error;
-    }
-  }
-
-  ipcMain.handle('set-secret', async (event, account: string, value: string) => {
-    console.log(`[Secrets] Attempting to set secret for: ${account}`);
-    try {
-      if (!safeStorage.isEncryptionAvailable()) {
-        console.warn(`[Secrets] safeStorage is NOT available on this system. Falling back to frontend localStorage.`);
-        return { success: false, error: 'ERR_ENCRYPTION_UNAVAILABLE', message: 'Encryption is not available on this system' };
-      }
-      
-      console.log(`[Secrets] safeStorage available, encrypting...`);
-      const encrypted = safeStorage.encryptString(value).toString('base64');
-      const secrets = await readSecrets();
-      secrets[account] = encrypted;
-      await writeSecrets(secrets);
-      return { success: true };
-    } catch (error: any) {
-      console.error(`[Secrets] Failed to set secret for ${account}:`, error.message);
-      return { success: false, error: 'ERR_STORAGE_FAILED', message: (error as Error).message };
-    }
-  });
-
-  ipcMain.handle('get-secret', async (event, account: string) => {
-    console.log(`[Secrets] Attempting to get secret for: ${account}`);
-    try {
-      if (!safeStorage.isEncryptionAvailable()) {
-        return { success: false, error: 'ERR_ENCRYPTION_UNAVAILABLE', message: 'Encryption is not available' };
-      }
-      const secrets = await readSecrets();
-      const encrypted = secrets[account];
-      if (!encrypted) {
-        console.log(`[Secrets] No secret found for ${account}`);
-        return { success: true, value: null };
-      }
-
-      console.log(`[Secrets] Encrypted secret found, decrypting...`);
-      const decrypted = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
-      return { success: true, value: decrypted };
-    } catch (error: any) {
-      console.error(`[Secrets] Failed to get secret for ${account}:`, error.message);
-      return { success: false, error: 'ERR_DECRYPTION_FAILED', message: (error as Error).message };
-    }
-  });
-
-  ipcMain.handle('delete-secret', async (event, account: string) => {
-    console.log(`[Secrets] Attempting to delete secret for: ${account}`);
-    try {
-      const secrets = await readSecrets();
-      delete secrets[account];
-      await writeSecrets(secrets);
-      return { success: true };
-    } catch (error: any) {
-      console.error(`[Secrets] Failed to delete secret for ${account}:`, error.message);
-      return { success: false, error: 'ERR_STORAGE_FAILED', message: (error as Error).message };
     }
   });
 
@@ -393,14 +310,6 @@ app.on('ready', () => {
     const semExists = await fs.stat(SEM_PATH).then(() => true).catch(() => false);
     const difftExists = await fs.stat(DIFFT_PATH).then(() => true).catch(() => false);
     return { sem: semExists, difft: difftExists, inspect: false };
-  });
-
-  ipcMain.handle('check-storage-encryption', async () => {
-    const available = safeStorage.isEncryptionAvailable();
-    return { 
-      success: available,
-      message: available ? 'Secure storage available' : 'Secure storage is not available on this system'
-    };
   });
 
   ipcMain.handle('open-external', async (event, url: string) => {

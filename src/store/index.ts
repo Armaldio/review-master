@@ -55,8 +55,6 @@ export const useReviewStore = defineStore('review', () => {
   const remoteComments = ref<any[]>([]);
   const codeownersRules = ref<Array<{ pattern: string, owners: string[] }>>([]);
   const fileOwners = ref<Record<string, string[]>>({});
-  const isSecureStorageAvailable = ref<boolean>(true);
-  const secureStorageErrorMessage = ref<string | null>(null);
   
   const accounts = useStorage<Account[]>('accounts', [], localStorage);
   const liveMRs = ref<MRShortMetadata[]>([]);
@@ -118,8 +116,7 @@ export const useReviewStore = defineStore('review', () => {
     const migrated: Account[] = [];
 
     // GitLab Migration
-    const glRes = await window.electronAPI.getSecret('gitlab_pat');
-    const glToken = glRes.success && glRes.value ? glRes.value : localStorage.getItem('gitlab_pat');
+    const glToken = localStorage.getItem('gitlab_pat');
     
     if (glToken) {
       console.log('[Store] Migrating legacy GitLab token...');
@@ -148,8 +145,7 @@ export const useReviewStore = defineStore('review', () => {
     }
 
     // GitHub Migration
-    const ghRes = await window.electronAPI.getSecret('github_pat');
-    const ghToken = ghRes.success && ghRes.value ? ghRes.value : localStorage.getItem('github_pat');
+    const ghToken = localStorage.getItem('github_pat');
     
     if (ghToken) {
       console.log('[Store] Migrating legacy GitHub token...');
@@ -212,14 +208,6 @@ export const useReviewStore = defineStore('review', () => {
     }
   };
 
-  const initializeStorageStatus = async () => {
-    const res = await window.electronAPI.checkStorage();
-    isSecureStorageAvailable.value = res.success;
-    if (!res.success) {
-      secureStorageErrorMessage.value = res.message || 'Secure storage service unavailable';
-    }
-  };
-  
   const markFileAsViewed = (filePath: string) => {
     if (!mrData.value) return;
     const file = diffs.value.find(d => d.new_path === filePath);
@@ -428,12 +416,8 @@ export const useReviewStore = defineStore('review', () => {
     const id = crypto.randomUUID();
     const tokenKey = `token_${id}`;
 
-    // Save token securely
-    const res = await window.electronAPI.setSecret(tokenKey, token);
-    if (!res.success) {
-      console.warn(`[Store] Secure storage failed: ${res.message}. Falling back to localStorage.`);
-      localStorage.setItem(tokenKey, token);
-    }
+    // Save token to localStorage
+    localStorage.setItem(tokenKey, token);
 
     const newAccount: Account = {
       id,
@@ -455,9 +439,9 @@ export const useReviewStore = defineStore('review', () => {
   const removeAccount = async (id: string) => {
     const account = accounts.value.find(a => a.id === id);
     if (account) {
-      await window.electronAPI.deleteSecret(account.tokenKey);
+      localStorage.removeItem(account.tokenKey);
       accounts.value = accounts.value.filter(a => a.id !== id);
-      console.log('[Store] Account removed and persistence updated.');
+      console.log('[Store] Account removed.');
     }
   };
 
@@ -593,9 +577,6 @@ export const useReviewStore = defineStore('review', () => {
     remoteComments,
     codeownersRules,
     fileOwners,
-    isSecureStorageAvailable,
-    secureStorageErrorMessage,
-    initializeStorageStatus,
     markFileAsViewed,
     selectFile,
     addBatchedComment,

@@ -43,10 +43,6 @@ const removeAccount = async (id: string) => {
     await store.removeAccount(id);
   }
 };
-
-onMounted(async () => {
-  await store.initializeStorageStatus();
-});
 </script>
 
 <template>
