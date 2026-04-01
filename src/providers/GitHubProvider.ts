@@ -90,7 +90,10 @@ export class GitHubProvider extends BaseProvider {
       this.getComments()
     ]);
 
-    this.mrData = metadata as MRMetadata;
+    this.mrData = {
+        ...this.mrData,
+        ...metadata
+    } as MRMetadata;
     this.remoteComments = comments;
   }
 

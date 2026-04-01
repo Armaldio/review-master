@@ -126,6 +126,7 @@ export class GitLabProvider extends BaseProvider {
     ]);
 
     this.mrData = {
+      ...this.mrData as any,
       ...metadata as any,
       projectNamespace: project.namespace.full_path,
       projectAncestors: ancestors,
