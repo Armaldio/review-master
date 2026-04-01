@@ -378,6 +378,12 @@ const addReaction = async (comment: any, emojiChar: string) => {
     }
 };
 
+const resetProgress = () => {
+  if (confirm("Are you sure you want to reset all viewed status for this review?")) {
+    store.resetViewedFiles();
+  }
+};
+
 const markAsViewed = () => {
   if (store.selectedFile) {
     const current = store.selectedFile;
@@ -1145,6 +1151,12 @@ const lineAnnotations = computed(() => {
             />
           </div>
           <div class="progress-container">
+            <div class="progress-header">
+              <span>Progress</span>
+              <button class="btn-icon-small" @click="resetProgress" title="Reset all viewed status">
+                <span v-html="TRASH_ICON"></span>
+              </button>
+            </div>
             <div class="progress-bar-wrapper">
               <div 
                 class="progress-bar-fill" 

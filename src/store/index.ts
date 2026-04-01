@@ -217,6 +217,10 @@ export const useReviewStore = defineStore('review', () => {
     // Use object spread to ensure reactivity
     viewedFiles.value = { ...viewedFiles.value, [filePath]: file.sha };
   };
+
+  const resetViewedFiles = () => {
+    viewedFiles.value = {};
+  };
   
   const selectFile = (filePath: string) => {
     selectedFile.value = filePath;
@@ -591,6 +595,7 @@ export const useReviewStore = defineStore('review', () => {
     codeownersRules,
     fileOwners,
     markFileAsViewed,
+    resetViewedFiles,
     selectFile,
     addBatchedComment,
     removeBatchedComment,
