@@ -21,6 +21,7 @@ const wordWrap = ref(true);
 const useTreeView = ref(true);
 const currentTab = ref<"diff" | "semantic" | "ast">("diff");
 const isSubmitting = ref(false);
+const isMarkingAsReady = ref(false);
 
 // Review Submission State
 const showReviewModal = ref(false);
@@ -49,6 +50,11 @@ const annotationVersion = ref(0);
 if (!store.mrData) {
   router.push("/");
 }
+
+const isAuthor = computed(() => {
+  if (!store.mrData || !store.currentUser) return false;
+  return store.mrData.author_username === store.currentUser.username;
+});
 
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
@@ -467,6 +473,20 @@ const postFileComment = async () => {
         alert(`File comment failed: ${(err as Error).message}`);
     } finally {
         isSubmitting.value = false;
+    }
+};
+
+const markAsReady = async () => {
+    if (!store.activeProvider) return;
+    isMarkingAsReady.value = true;
+    try {
+        await store.activeProvider.markAsReady();
+        // The provider update its own state internally, 
+        // mrData.draft is a reactive property so the button will disappear.
+    } catch (err) {
+        alert(`Failed to mark as ready: ${(err as Error).message}`);
+    } finally {
+        isMarkingAsReady.value = false;
     }
 };
 
@@ -1070,6 +1090,15 @@ const lineAnnotations = computed(() => {
         </div>
 
         <div class="primary-actions">
+          <button 
+            v-if="isAuthor && store.mrData?.draft" 
+            class="btn-secondary" 
+            @click="markAsReady" 
+            :disabled="isMarkingAsReady"
+            style="margin-right: 8px;"
+          >
+            {{ isMarkingAsReady ? 'Marking...' : 'Mark as Ready' }}
+          </button>
           <button class="btn-primary" @click="markAsViewed">
             Mark as Viewed
           </button>

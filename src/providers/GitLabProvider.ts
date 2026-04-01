@@ -154,7 +154,8 @@ export class GitLabProvider extends BaseProvider {
       latestVersion,
       projectNamespace: project.namespace.full_path,
       projectAncestors: ancestors,
-      sharedWithGroups: sharedGroups
+      sharedWithGroups: sharedGroups,
+      draft: mrInfo.draft || mrInfo.work_in_progress
     };
   }
 
@@ -400,6 +401,27 @@ export class GitLabProvider extends BaseProvider {
 
     if (!res.ok) {
       throw new Error(`Review submission failed: ${res.statusText}`);
+    }
+  }
+  
+  public async markAsReady(): Promise<void> {
+    const pat = await this.getPat();
+    const projectPath = this.mrData!.encodedProjectPath;
+    const iid = this.mrData!.number;
+    const host = this.mrData!.host;
+
+    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}`, {
+      method: 'PUT',
+      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft: false })
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to mark as ready: ${res.statusText}`);
+    }
+    
+    if (this.mrData) {
+      this.mrData.draft = false;
     }
   }
 

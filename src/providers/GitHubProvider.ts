@@ -119,6 +119,8 @@ export class GitHubProvider extends BaseProvider {
       projectPath,
       headSha: prData.head.sha,
       baseSha: prData.base.sha,
+      draft: prData.draft,
+      author_username: prData.user.login
     };
   }
 
@@ -290,6 +292,28 @@ export class GitHubProvider extends BaseProvider {
       })
     });
     if (!res.ok) throw new Error(`Review submission failed: ${res.statusText}`);
+  }
+
+  public async markAsReady(): Promise<void> {
+    const pat = await this.getPat();
+    const headers = { 
+        'Authorization': `Bearer ${pat}`, 
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json' 
+    };
+
+    const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/${this.mrData!.number}/ready`, {
+      method: 'POST',
+      headers
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to mark as ready: ${res.statusText}`);
+    }
+
+    if (this.mrData) {
+      this.mrData.draft = false;
+    }
   }
 
   private async fetchAll(url: string, headers: HeadersInit): Promise<any[]> {

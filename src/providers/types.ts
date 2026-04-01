@@ -63,6 +63,7 @@ export interface MRMetadata {
   projectNamespace?: string;
   projectAncestors?: string[];
   sharedWithGroups?: string[];
+  draft?: boolean;
 }
 
 export interface CodeownerRule {
