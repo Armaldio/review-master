@@ -433,23 +433,32 @@ export class GitLabProvider extends BaseProvider {
     const iid = this.mrData!.number;
     const host = this.mrData!.host;
 
-    const payload: any = {};
-    if (comment.trim()) payload.body = comment;
-
-    if (action === 'approve') {
-      payload.action = 'approve';
-    } else if (action === 'request_changes') {
-      payload.action = 'unapprove';
+    // 1. Post comment if provided
+    if (comment.trim()) {
+      const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/notes`, {
+        method: 'POST',
+        headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: comment })
+      });
+      if (!res.ok) throw new Error(`Failed to post review comment: ${res.statusText}`);
     }
 
-    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/review`, {
-      method: 'POST',
-      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      throw new Error(`Review submission failed: ${res.statusText}`);
+    // 2. Handle approval/unapproval
+    if (action === 'approve') {
+      const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/approve`, {
+        method: 'POST',
+        headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sha: this.mrData!.latestVersion.head_commit_sha })
+      });
+      if (!res.ok) throw new Error(`Approval failed: ${res.statusText}`);
+    } else if (action === 'request_changes') {
+      // In GitLab, "Request Changes" is often represented by "Unapprove" 
+      // or just leaving a comment and not approving.
+      const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/unapprove`, {
+        method: 'POST',
+        headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) throw new Error(`Unapproval failed: ${res.statusText}`);
     }
   }
   
