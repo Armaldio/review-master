@@ -21,8 +21,8 @@ export function parseUrl(url: string): ParsedUrl {
   const urlObj = new URL(url);
   const host = urlObj.origin;
 
-  // GitHub: /{owner}/{repo}/pull/{number}
-  const ghMatch = urlObj.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  // GitHub: /{owner}/{repo}/pull/{number} OR /repos/{owner}/{repo}/pulls/{number}
+  const ghMatch = urlObj.pathname.match(/^\/(?:repos\/)?([^/]+)\/([^/]+)\/pulls?\/(\d+)/);
   if (ghMatch) {
     return {
       platform: 'github',
@@ -56,8 +56,13 @@ export function createProvider(url: string, accounts: Account[]): BaseProvider {
   // Find an account that matches the host
   const account = accounts.find(a => {
     try {
-      const aHost = new URL(a.host).origin;
-      const uHost = new URL(parsed.host).origin;
+      let aHost = new URL(a.host).origin;
+      let uHost = new URL(parsed.host).origin;
+      
+      // Standardize GitHub hosts for comparison (web vs api)
+      if (aHost.includes('github.com')) aHost = 'https://github.com';
+      if (uHost.includes('github.com')) uHost = 'https://github.com';
+      
       return aHost === uHost && a.platform === parsed.platform;
     } catch {
       return false;

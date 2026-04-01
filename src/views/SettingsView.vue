@@ -62,7 +62,7 @@ const removeAccount = async (id: string) => {
           >GitLab</button>
           <button 
             :class="{ active: newAccount.platform === 'github' }" 
-            @click="newAccount.platform = 'github'; newAccount.host = 'https://github.com'"
+            @click="newAccount.platform = 'github'; newAccount.host = 'https://api.github.com'"
           >GitHub</button>
         </div>
       </div>

@@ -18,7 +18,12 @@ export class GitHubProvider extends BaseProvider {
     if (!pat) throw new Error('No GitHub PAT found. Go to Settings.');
 
     const { owner, repo, number: prNumber, projectPath, host } = parsed;
-    const apiBase = host || 'https://api.github.com';
+    // Normalize GitHub host: github.com -> api.github.com
+    let apiBase = host || 'https://api.github.com';
+    if (apiBase.includes('github.com') && !apiBase.includes('api.github.com')) {
+      apiBase = 'https://api.github.com';
+    }
+
     const headers: HeadersInit = {
       'Authorization': `Bearer ${pat}`,
       'Accept': 'application/vnd.github.squirrel-girl-preview+json',
@@ -148,7 +153,13 @@ export class GitHubProvider extends BaseProvider {
       'Accept': 'application/vnd.github.v3+json',
     };
 
-    const res = await fetch(`${this.mrData.host}/repos/${this.mrData.owner}/${this.mrData.repo}/pulls/${this.mrData.number}`, { headers });
+    // Standard GitHub API URL should always be api.github.com
+    let host = this.mrData.host;
+    if (host.includes('github.com') && !host.includes('api.github.com')) {
+        host = 'https://api.github.com';
+    }
+
+    const res = await fetch(`${host}/repos/${this.mrData.owner}/${this.mrData.repo}/pulls/${this.mrData.number}`, { headers });
     if (!res.ok) throw new Error(`Failed to fetch PR metadata: ${res.statusText}`);
     const prData = await res.json();
 
