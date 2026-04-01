@@ -1,4 +1,4 @@
-import { Comment, DiffFile, MRMetadata, CodeownerRule, Platform, User, MRShortMetadata } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, Platform, User, MRShortMetadata, Account } from './types';
 
 export abstract class BaseProvider {
   public abstract platform: Platform;
@@ -8,13 +8,23 @@ export abstract class BaseProvider {
   public abstract codeownersRules: CodeownerRule[];
   public abstract remoteComments: Comment[];
 
-  protected abstract patLabel: string;
+  protected tokenKey: string = '';
+  protected host: string = '';
+
+  constructor(account?: Account) {
+    if (account) {
+      this.tokenKey = account.tokenKey;
+      this.host = account.host;
+    }
+  }
 
   /**
    * Helper to fetch personal access token with secure storage fallback
    */
   public async getPat(): Promise<string | null> {
-    const key = this.patLabel;
+    const key = this.tokenKey;
+    if (!key) return null;
+    
     const res = await (window as any).electronAPI.getSecret(key);
     if (res.success && res.value) return res.value;
     

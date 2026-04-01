@@ -1,5 +1,5 @@
 import { BaseProvider } from './BaseProvider';
-import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata, Account } from './types';
 
 export class GitHubProvider extends BaseProvider {
   public platform: 'github' = 'github' as const;
@@ -9,7 +9,9 @@ export class GitHubProvider extends BaseProvider {
   public codeownersRules: CodeownerRule[] = [];
   public remoteComments: Comment[] = [];
 
-  protected patLabel = 'github_pat';
+  constructor(account?: Account) {
+    super(account);
+  }
 
   public async initialize(parsed: { owner: string; repo: string; number: string; projectPath: string; host: string }): Promise<void> {
     const pat = await this.getPat();

@@ -83,3 +83,14 @@ export interface MRShortMetadata {
   platform: Platform;
   draft?: boolean;
 }
+
+export interface Account {
+  id: string;
+  platform: Platform;
+  host: string;
+  tokenKey: string;
+  username: string;
+  avatar_url?: string;
+  name?: string;
+  lastTestedAt?: string;
+}

@@ -4,7 +4,7 @@ import { useStorage } from '@vueuse/core';
 import type { BaseProvider } from '../providers/BaseProvider';
 import { parseDiffFromFile } from '@pierre/diffs';
 import { createProvider, parseUrl, GitLabProvider, GitHubProvider } from '../providers';
-import type { DiffFile, MRShortMetadata } from '../providers/types';
+import type { DiffFile, MRShortMetadata, Account } from '../providers/types';
 
 export const getLanguage = (filePath: string) => {
   const ext = filePath.split('.').pop()?.toLowerCase();
@@ -58,33 +58,99 @@ export const useReviewStore = defineStore('review', () => {
   const isSecureStorageAvailable = ref<boolean>(true);
   const secureStorageErrorMessage = ref<string | null>(null);
   
+  const accounts = useStorage<Account[]>('accounts', []);
   const liveMRs = ref<MRShortMetadata[]>([]);
   const isLiveLoading = ref(false);
 
+  const migrateLegacyAccounts = async () => {
+    // Check if we already have accounts or if we need to migrate
+    if (accounts.value.length > 0) return;
+
+    console.log('[Store] Checking for legacy tokens to migrate...');
+    const migrated: Account[] = [];
+
+    // GitLab Migration
+    const glRes = await window.electronAPI.getSecret('gitlab_pat');
+    const glToken = glRes.success && glRes.value ? glRes.value : localStorage.getItem('gitlab_pat');
+    
+    if (glToken) {
+      console.log('[Store] Migrating legacy GitLab token...');
+      try {
+        const provider = new GitLabProvider();
+        // Temporarily set tokenKey for fetch
+        (provider as any).tokenKey = 'gitlab_pat';
+        const userRes = await fetch('https://gitlab.com/api/v4/user', {
+          headers: { 'PRIVATE-TOKEN': glToken }
+        });
+        if (userRes.ok) {
+          const user = await userRes.json();
+          migrated.push({
+            id: 'legacy-gitlab',
+            platform: 'gitlab',
+            host: 'https://gitlab.com',
+            tokenKey: 'gitlab_pat',
+            username: user.username,
+            avatar_url: user.avatar_url,
+            name: user.name
+          });
+        }
+      } catch (e) {
+        console.error('[Store] Failed to migrate GitLab token:', e);
+      }
+    }
+
+    // GitHub Migration
+    const ghRes = await window.electronAPI.getSecret('github_pat');
+    const ghToken = ghRes.success && ghRes.value ? ghRes.value : localStorage.getItem('github_pat');
+    
+    if (ghToken) {
+      console.log('[Store] Migrating legacy GitHub token...');
+      try {
+        const userRes = await fetch('https://api.github.com/user', {
+          headers: { 'Authorization': `Bearer ${ghToken}` }
+        });
+        if (userRes.ok) {
+          const user = await userRes.json();
+          migrated.push({
+            id: 'legacy-github',
+            platform: 'github',
+            host: 'https://github.com',
+            tokenKey: 'github_pat',
+            username: user.login,
+            avatar_url: user.avatar_url,
+            name: user.name
+          });
+        }
+      } catch (e) {
+        console.error('[Store] Failed to migrate GitHub token:', e);
+      }
+    }
+
+    if (migrated.length > 0) {
+      accounts.value = migrated;
+      console.log(`[Store] Successfully migrated ${migrated.length} accounts.`);
+    }
+  };
+
   const fetchRecentActivity = async () => {
+    if (accounts.value.length === 0) {
+      await migrateLegacyAccounts();
+    }
+    
+    if (accounts.value.length === 0) return;
+
     isLiveLoading.value = true;
     try {
-      const providers: any[] = [];
+      const providers = accounts.value.map(acc => {
+        if (acc.platform === 'github') return new GitHubProvider(acc);
+        return new GitLabProvider(acc);
+      });
+
+      const results = await Promise.all(providers.map(p => p.getActiveMRs().catch(err => {
+        console.error(`[Store] Failed to fetch activity for ${p.platform}:`, err);
+        return [];
+      })));
       
-      // Check GitLab
-      const glPat = await window.electronAPI.getSecret('gitlab_pat');
-      if (glPat.success && glPat.value) {
-        providers.push(new GitLabProvider());
-      } else {
-        const fallback = localStorage.getItem('gitlab_pat');
-        if (fallback) providers.push(new GitLabProvider());
-      }
-
-      // Check GitHub
-      const ghPat = await window.electronAPI.getSecret('github_pat');
-      if (ghPat.success && ghPat.value) {
-        providers.push(new GitHubProvider());
-      } else {
-        const fallback = localStorage.getItem('github_pat');
-        if (fallback) providers.push(new GitHubProvider());
-      }
-
-      const results = await Promise.all(providers.map(p => p.getActiveMRs()));
       const flatResults = results.flat() as MRShortMetadata[];
       
       // Sort by updated_at desc
@@ -281,9 +347,68 @@ export const useReviewStore = defineStore('review', () => {
     batchedComments.value = [];
   };
 
+  const addAccount = async (platform: 'github' | 'gitlab', host: string, token: string) => {
+    let username = '';
+    let avatar_url = '';
+    let name = '';
+
+    // Verify token and get User Info
+    try {
+      if (platform === 'gitlab') {
+        const res = await fetch(`${host}/api/v4/user`, {
+          headers: { 'PRIVATE-TOKEN': token }
+        });
+        if (!res.ok) throw new Error('Invalid GitLab token or host');
+        const user = await res.json();
+        username = user.username;
+        avatar_url = user.avatar_url;
+        name = user.name;
+      } else {
+        const res = await fetch('https://api.github.com/user', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error('Invalid GitHub token');
+        const user = await res.json();
+        username = user.login;
+        avatar_url = user.avatar_url;
+        name = user.name;
+      }
+    } catch (e: any) {
+      throw new Error(`Verification failed: ${e.message}`);
+    }
+
+    const id = crypto.randomUUID();
+    const tokenKey = `token_${id}`;
+
+    // Save token securely
+    await window.electronAPI.setSecret(tokenKey, token);
+
+    const newAccount: Account = {
+      id,
+      platform,
+      host,
+      tokenKey,
+      username,
+      avatar_url,
+      name,
+      lastTestedAt: new Date().toISOString()
+    };
+
+    accounts.value.push(newAccount);
+    return newAccount;
+  };
+
+  const removeAccount = async (id: string) => {
+    const account = accounts.value.find(a => a.id === id);
+    if (account) {
+      await window.electronAPI.deleteSecret(account.tokenKey);
+      accounts.value = accounts.value.filter(a => a.id !== id);
+    }
+  };
+
   const initializeMR = async (url: string) => {
     mrUrl.value = url;
-    const provider = createProvider(url);
+    const provider = createProvider(url, accounts.value);
     const parsed = parseUrl(url);
     
     await provider.initialize(parsed);
@@ -359,6 +484,9 @@ export const useReviewStore = defineStore('review', () => {
     initializeMR,
     liveMRs,
     isLiveLoading,
-    fetchRecentActivity
+    fetchRecentActivity,
+    accounts,
+    addAccount,
+    removeAccount
   };
 });

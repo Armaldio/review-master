@@ -1,6 +1,7 @@
 import { GitHubProvider } from './GitHubProvider';
 import { GitLabProvider } from './GitLabProvider';
 import { BaseProvider } from './BaseProvider';
+import { Account } from './types';
 
 export * from './types';
 export * from './BaseProvider';
@@ -49,11 +50,27 @@ export function parseUrl(url: string): ParsedUrl {
   throw new Error('Invalid URL format. Supported:\n• GitLab: https://gitlab.com/org/project/-/merge_requests/42\n• GitHub: https://github.com/owner/repo/pull/123');
 }
 
-export function createProvider(url: string): BaseProvider {
+export function createProvider(url: string, accounts: Account[]): BaseProvider {
   const parsed = parseUrl(url);
+  
+  // Find an account that matches the host
+  const account = accounts.find(a => {
+    try {
+      const aHost = new URL(a.host).origin;
+      const uHost = new URL(parsed.host).origin;
+      return aHost === uHost && a.platform === parsed.platform;
+    } catch {
+      return false;
+    }
+  });
+
+  if (!account) {
+    throw new Error(`No account found for ${parsed.host}. Please add it in Settings.`);
+  }
+
   if (parsed.platform === 'github') {
-    return new GitHubProvider();
+    return new GitHubProvider(account);
   } else {
-    return new GitLabProvider();
+    return new GitLabProvider(account);
   }
 }

@@ -1,5 +1,5 @@
 import { BaseProvider } from './BaseProvider';
-import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata, Account } from './types';
 import { useStorage } from '@vueuse/core';
 
 export class GitLabProvider extends BaseProvider {
@@ -10,7 +10,9 @@ export class GitLabProvider extends BaseProvider {
   public codeownersRules: CodeownerRule[] = [];
   public remoteComments: Comment[] = [];
 
-  protected patLabel = 'gitlab_pat';
+  constructor(account?: Account) {
+    super(account);
+  }
   
   // Persistent cache for group memberships (24h TTL)
   private membershipCache = useStorage<Record<string, { isMember: boolean; timestamp: number }>>('gitlab-membership-cache', {});
@@ -20,7 +22,8 @@ export class GitLabProvider extends BaseProvider {
     const pat = await this.getPat();
     if (!pat) throw new Error('No GitLab PAT found. Go to Settings.');
 
-    const { host, projectPath, number: mrIid } = parsed;
+    const host = parsed.host || this.host;
+    const { projectPath, number: mrIid } = parsed;
     const encodedProjectPath = encodeURIComponent(projectPath);
 
     // Fetch Diffs
