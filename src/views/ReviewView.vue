@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { useStorage } from "@vueuse/core";
 import type { DiffLineAnnotation, AnnotationSide, SelectedLineRange } from "@pierre/diffs";
 import { useRouter } from "vue-router";
 import { useReviewStore, getLanguage } from "../store";
@@ -23,6 +24,37 @@ const currentTab = ref<"diff" | "semantic" | "ast">("diff");
 const isSubmitting = ref(false);
 const isMarkingAsReady = ref(false);
 const isRefreshing = ref(false);
+
+const sidebarWidth = useStorage("review_sidebar_width", 320);
+const isResizing = ref(false);
+
+const startResize = (e: MouseEvent) => {
+  isResizing.value = true;
+  document.body.classList.add("is-resizing");
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", stopResize);
+};
+
+const onMouseMove = (e: MouseEvent) => {
+  if (!isResizing.value) return;
+  const newWidth = Math.max(200, Math.min(e.clientX, window.innerWidth * 0.7));
+  sidebarWidth.value = newWidth;
+};
+
+const stopResize = () => {
+  isResizing.value = false;
+  document.body.classList.remove("is-resizing");
+  window.removeEventListener("mousemove", onMouseMove);
+  window.removeEventListener("mouseup", stopResize);
+};
+
+// --- Scroll to top on file switch ---
+watch(() => store.selectedFile, () => {
+    nextTick(() => {
+        const diffArea = document.querySelector(".diff-area");
+        if (diffArea) diffArea.scrollTop = 0;
+    });
+});
 
 // Review Submission State
 const showReviewModal = ref(false);
@@ -976,7 +1008,7 @@ const lineAnnotations = computed(() => {
 
 <template>
   <div class="review-container">
-    <div class="sidebar">
+    <div class="sidebar" :style="{ width: sidebarWidth + 'px' }">
       <div class="sidebar-header">
         <h3>Files</h3>
         <div class="progress-container">
@@ -1060,6 +1092,8 @@ const lineAnnotations = computed(() => {
         </button>
       </div>
     </div>
+
+    <div class="resizer" @mousedown="startResize"></div>
 
     <div class="main-content">
       <div class="toolbar">
@@ -1295,12 +1329,24 @@ const lineAnnotations = computed(() => {
   color: #ccc;
 }
 .sidebar {
-  width: 320px;
   background: #252526;
   border-right: 1px solid #333;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+}
+.resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.2s;
+  z-index: 10;
+  flex-shrink: 0;
+}
+.resizer:hover, .is-resizing .resizer {
+  background: #007acc;
 }
 .sidebar-header {
   padding: 1rem;
@@ -2235,6 +2281,12 @@ input:focus + .slider {
   animation: spin 1s linear infinite;
 }
 @keyframes spin {
-  to { transform: rotate(360deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Global resizing states */
+:global(body.is-resizing) {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 </style>
