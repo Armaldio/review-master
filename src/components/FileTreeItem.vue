@@ -115,9 +115,6 @@ const nodeCommentStats = computed(() => {
         >
           {{ nodeCommentStats.unresolved }}
         </span>
-        <span class="badge-total" v-else>
-          {{ nodeCommentStats.total }}
-        </span>
       </div>
     </div>
     

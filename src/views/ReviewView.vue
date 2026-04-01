@@ -114,6 +114,11 @@ const isAuthor = computed(() => {
   return store.mrData.author_username === store.currentUser.username;
 });
 
+const isViewed = computed(() => {
+  if (!store.selectedFile || !store.viewedFiles || !file.value) return false;
+  return store.viewedFiles[store.selectedFile] === file.value.sha;
+});
+
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
 const relevantFiles = computed(() => {
@@ -375,10 +380,14 @@ const addReaction = async (comment: any, emojiChar: string) => {
 
 const markAsViewed = () => {
   if (store.selectedFile) {
-    store.markFileAsViewed(store.selectedFile);
-    const unviewed = modifiedFiles.value.filter(
-      (f) => !store.viewedFiles[f],
+    const current = store.selectedFile;
+    store.markFileAsViewed(current);
+    
+    // Find next unviewed file in the CURRENTLY displayed/filtered list
+    const unviewed = relevantFiles.value.filter(
+      (f) => f !== current && !store.viewedFiles[f],
     );
+    
     if (unviewed.length > 0) {
       store.selectFile(unviewed[0]);
     }
@@ -1188,9 +1197,6 @@ const lineAnnotations = computed(() => {
             >
               {{ store.commentStatsByFile[file].unresolved }}
             </span>
-            <span class="badge-total" v-else>
-              {{ store.commentStatsByFile[file].total }}
-            </span>
           </div>
         </li>
       </ul>
@@ -1325,8 +1331,8 @@ const lineAnnotations = computed(() => {
           >
             {{ isMarkingAsReady ? 'Marking...' : 'Mark as Ready' }}
           </button>
-          <button class="btn-primary" @click="markAsViewed">
-            Mark as Viewed
+          <button class="btn-primary" @click="markAsViewed" :disabled="isViewed" :class="{ 'viewed': isViewed }">
+            {{ isViewed ? 'Already Viewed' : 'Mark as Viewed' }}
           </button>
         </div>
       </div>
@@ -1743,8 +1749,15 @@ input:focus + .slider {
 .btn-primary:hover {
   background: #45a049;
 }
-.btn-primary:disabled {
-  background: #555;
+.btn-primary:active {
+  transform: translateY(1px);
+}
+.btn-primary.viewed {
+  background: #30363d;
+  color: #8b949e;
+  border: 1px solid #444;
+  cursor: default;
+  box-shadow: none;
 }
 .btn-secondary {
   background: #333;

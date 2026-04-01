@@ -221,7 +221,8 @@ export const useReviewStore = defineStore('review', () => {
     if (!mrData.value) return;
     const file = diffs.value.find(d => d.new_path === filePath);
     if (!file) return;
-    viewedFiles.value[filePath] = file.sha;
+    // Use object spread to ensure reactivity
+    viewedFiles.value = { ...viewedFiles.value, [filePath]: file.sha };
   };
   
   const selectFile = (filePath: string) => {
