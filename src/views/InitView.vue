@@ -84,34 +84,8 @@ const initializeReview = async () => {
   errorMsg.value = '';
 
   try {
-    const provider = createProvider(mrUrl.value);
-    const parsed = parseUrl(mrUrl.value);
-    
-    await provider.initialize(parsed);
-    
-    // Sycn store with provider data
-    reviewStore.activeProvider = provider;
-    reviewStore.mrData = provider.mrData;
-    reviewStore.diffs = provider.diffs;
-    reviewStore.currentUser = provider.currentUser;
-    reviewStore.platform = provider.platform;
-    reviewStore.remoteComments = provider.remoteComments;
-    reviewStore.codeownersRules = provider.codeownersRules;
-
-    // Cache file ownership for all changed files
-    if (reviewStore.codeownersRules.length > 0) {
-      const filePaths = reviewStore.diffs.map(f => f.new_path);
-      reviewStore.fileOwners = await window.electronAPI.matchCodeownersBulk(filePaths, provider.codeownersRules);
-    } else {
-      reviewStore.fileOwners = {};
-    }
-
-    saveToHistory(mrUrl.value, provider.mrData?.title || '', parsed.projectPath);
-    
-    if (provider.diffs.length > 0) {
-      reviewStore.selectFile(provider.diffs[0].new_path);
-    }
-
+    await reviewStore.initializeMR(mrUrl.value);
+    saveToHistory(mrUrl.value, reviewStore.mrData?.title || '', parseUrl(mrUrl.value).projectPath);
     router.push('/review');
   } catch (err) {
     errorMsg.value = (err as Error).message;

@@ -14,3 +14,5 @@
 
 # Not reviewed
 - Ensure closed comment threads  are displayed differently than open ones.
+- When switching files, you should scroll to the top of the new file
+- "inspect" tool now have releases

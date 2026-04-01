@@ -12,7 +12,7 @@ export interface FileNode {
 const props = defineProps<{
   node: FileNode;
   selectedFile: string | null;
-  viewedFiles: Set<string>;
+  viewedFiles: Record<string, string>;
   depth?: number;
   sortViewedToBottom?: boolean;
 }>();
@@ -54,7 +54,7 @@ const sortedChildren = computed(() => {
 });
 
 const isNodeViewed = (node: FileNode): boolean => {
-    if (!node.isDir) return props.viewedFiles.has(node.path);
+    if (!node.isDir) return !!props.viewedFiles[node.path];
     if (!node.children || Object.keys(node.children).length === 0) return true;
     return Object.values(node.children).every(child => isNodeViewed(child));
 };

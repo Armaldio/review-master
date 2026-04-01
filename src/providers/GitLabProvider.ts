@@ -24,7 +24,11 @@ export class GitLabProvider extends BaseProvider {
     const encodedProjectPath = encodeURIComponent(projectPath);
 
     // Fetch Diffs
-    this.diffs = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, pat);
+    const rawDiffs = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, pat);
+    this.diffs = rawDiffs.map((d: any) => ({
+      ...d,
+      sha: d.new_id || d.am_id || '' // GitLab uses new_id for the blob sha
+    }));
 
     // Fetch MR info
     const infoRes = await fetch(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}`, {
@@ -135,7 +139,7 @@ export class GitLabProvider extends BaseProvider {
     }
 
     this.mrData = {
-      id: mrIid,
+      id: mrInfo.id,
       title: mrInfo.title,
       description: mrInfo.description,
       state: mrInfo.state,
@@ -144,8 +148,8 @@ export class GitLabProvider extends BaseProvider {
       created_at: mrInfo.created_at,
       web_url: mrInfo.web_url,
       host,
-      owner: '',
-      repo: '',
+      owner: project.namespace.full_path,
+      repo: project.name,
       number: mrIid,
       projectPath,
       headSha: latestVersion.head_commit_sha,

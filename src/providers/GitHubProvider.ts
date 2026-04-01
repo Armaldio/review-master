@@ -37,6 +37,7 @@ export class GitHubProvider extends BaseProvider {
       new_file: f.status === 'added',
       deleted_file: f.status === 'removed',
       renamed_file: f.status === 'renamed',
+      sha: f.sha
     }));
 
     // Fetch User
@@ -120,7 +121,8 @@ export class GitHubProvider extends BaseProvider {
       headSha: prData.head.sha,
       baseSha: prData.base.sha,
       draft: prData.draft,
-      author_username: prData.user.login
+      author_username: prData.user.login,
+      id: prData.node_id
     };
   }
 

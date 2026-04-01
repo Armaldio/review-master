@@ -22,6 +22,7 @@ const useTreeView = ref(true);
 const currentTab = ref<"diff" | "semantic" | "ast">("diff");
 const isSubmitting = ref(false);
 const isMarkingAsReady = ref(false);
+const isRefreshing = ref(false);
 
 // Review Submission State
 const showReviewModal = ref(false);
@@ -80,7 +81,7 @@ const relevantFiles = computed(() => {
 });
 
 const totalFilesCount = computed(() => relevantFiles.value.length);
-const viewedCount = computed(() => relevantFiles.value.filter(f => store.viewedFiles.has(f)).length);
+const viewedCount = computed(() => relevantFiles.value.filter(f => !!store.viewedFiles[f]).length);
 
 const progressPercent = computed(() => {
   if (totalFilesCount.value === 0) return 0;
@@ -92,8 +93,8 @@ const displayedFiles = computed(() => {
 
   // Sort: Unviewed first, then viewed
   return files.sort((a, b) => {
-    const aViewed = store.viewedFiles.has(a);
-    const bViewed = store.viewedFiles.has(b);
+    const aViewed = !!store.viewedFiles[a];
+    const bViewed = !!store.viewedFiles[b];
     if (aViewed === bViewed) return a.localeCompare(b);
     return aViewed ? 1 : -1;
   });
@@ -154,6 +155,11 @@ const fileTree = computed(() => {
   rollout(root);
 
   return root;
+});
+
+const orphanedComments = computed(() => {
+    const filePaths = new Set(store.diffs.map(d => d.new_path));
+    return store.batchedComments.filter(c => !filePaths.has(c.new_path));
 });
 
 const file = computed(() => {
@@ -336,7 +342,7 @@ const markAsViewed = () => {
   if (store.selectedFile) {
     store.markFileAsViewed(store.selectedFile);
     const unviewed = modifiedFiles.value.filter(
-      (f) => !store.viewedFiles.has(f),
+      (f) => !store.viewedFiles[f],
     );
     if (unviewed.length > 0) {
       store.selectFile(unviewed[0]);
@@ -487,6 +493,18 @@ const markAsReady = async () => {
         alert(`Failed to mark as ready: ${(err as Error).message}`);
     } finally {
         isMarkingAsReady.value = false;
+    }
+};
+
+const refreshMR = async () => {
+    if (!store.mrUrl) return;
+    isRefreshing.value = true;
+    try {
+        await store.initializeMR(store.mrUrl);
+    } catch (err) {
+        alert(`Refresh failed: ${(err as Error).message}`);
+    } finally {
+        isRefreshing.value = false;
     }
 };
 
@@ -998,7 +1016,7 @@ const lineAnnotations = computed(() => {
           :key="file"
           :class="{
             active: store.selectedFile === file,
-            viewed: store.viewedFiles.has(file),
+            viewed: !!store.viewedFiles[file],
           }"
           @click="selectFile(file)"
         >
@@ -1018,6 +1036,9 @@ const lineAnnotations = computed(() => {
 
       <div class="batch-panel" v-if="store.batchedComments.length > 0">
         <h3>Batched Comments ({{ store.batchedComments.length }})</h3>
+        <div v-if="orphanedComments.length > 0" class="orphaned-warning">
+            ⚠️ {{ orphanedComments.length }} comments on deleted/moved files
+        </div>
         <ul class="batch-list">
           <li v-for="c in store.batchedComments" :key="c.id">
             Line {{ c.new_line }}: {{ c.body.substring(0, 20) }}...
@@ -1091,6 +1112,16 @@ const lineAnnotations = computed(() => {
 
         <div class="primary-actions">
           <button 
+            class="btn-secondary" 
+            @click="refreshMR" 
+            :disabled="isRefreshing"
+            title="Refresh MR data"
+            style="margin-right: 8px; display: flex; align-items: center; gap: 4px;"
+          >
+            <span v-if="isRefreshing" class="spinner-small"></span>
+            {{ isRefreshing ? 'Refreshing...' : 'Refresh' }}
+          </button>
+          <button 
             v-if="isAuthor && store.mrData?.draft" 
             class="btn-secondary" 
             @click="markAsReady" 
@@ -1125,15 +1156,15 @@ const lineAnnotations = computed(() => {
             Analyzing diff...
           </div>
           <PierreDiff
-            v-else-if="parsedFileDiff"
-            :key="`${file?.new_path}-${viewMode}`"
+            v-else-if="parsedFileDiff && file && store.mrData"
+            :key="`${file.new_path}-${viewMode}`"
             :fileDiff="parsedFileDiff"
             :options="diffOptions"
             :lineAnnotations="lineAnnotations"
-            :expandedHunks="store.fileExpansionStates[file?.new_path]"
-            @expand-hunk="(map) => store.updateExpansionState(file?.new_path, map)"
-            :oldFile="store.fileContents[file?.new_path]?.old ? getFileContentFromChange(store.fileContents[file?.new_path]?.old, file?.old_path || '/dev/null') : undefined"
-            :newFile="store.fileContents[file?.new_path]?.new ? getFileContentFromChange(store.fileContents[file?.new_path]?.new, file?.new_path || '/dev/null') : undefined"
+            :expandedHunks="store.fileExpansionStates[file.new_path]"
+            @expand-hunk="(map) => store.updateExpansionState(file!.new_path, map)"
+            :oldFile="store.fileContents[file.new_path]?.old ? getFileContentFromChange(store.fileContents[file.new_path]?.old, file.old_path || '/dev/null') : undefined"
+            :newFile="store.fileContents[file.new_path]?.new ? getFileContentFromChange(store.fileContents[file.new_path]?.new, file.new_path || '/dev/null') : undefined"
           />
           <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
           <div v-else class="empty-state">Select a file to review</div>

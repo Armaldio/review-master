@@ -39,6 +39,7 @@ export interface DiffFile {
   new_file: boolean;
   deleted_file: boolean;
   renamed_file: boolean;
+  sha: string;
 }
 
 export interface MRMetadata {
@@ -50,8 +51,7 @@ export interface MRMetadata {
   projectPath: string;
   headSha: string;
   baseSha: string;
-  // Specific to GitLab
-  id?: string | number;
+  id: string | number;
   description?: string;
   state?: string;
   author?: string;

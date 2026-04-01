@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia';
-import { ref, shallowRef, computed } from 'vue';
+import { ref, shallowRef, computed, watch } from 'vue';
+import { useStorage } from '@vueuse/core';
 import type { BaseProvider } from '../providers/BaseProvider';
 import { parseDiffFromFile } from '@pierre/diffs';
+import { createProvider, parseUrl } from '../providers';
+import type { DiffFile } from '../providers/types';
 
 export const getLanguage = (filePath: string) => {
   const ext = filePath.split('.').pop()?.toLowerCase();
@@ -28,8 +31,23 @@ export const getLanguage = (filePath: string) => {
 export const useReviewStore = defineStore('review', () => {
   const activeProvider = shallowRef<BaseProvider | null>(null);
   const mrData = ref<any>(null);
-  const diffs = ref<any[]>([]);
-  const viewedFiles = ref<Set<string>>(new Set());
+  const mrUrl = ref<string>('');
+  const diffs = ref<DiffFile[]>([]);
+  // Use persistent storage for viewed files, keyed by MR ID
+  const viewedFiles = ref<Record<string, string>>({});
+  
+  // Watch for mrData.id changes to load/save viewed files
+  watch(() => mrData.value?.id, (newId) => {
+    if (newId) {
+      const storage = useStorage<Record<string, string>>(`viewed_files_${newId}`, {});
+      viewedFiles.value = storage.value;
+      // Sync back to storage when changed
+      watch(viewedFiles, (v) => { storage.value = v; }, { deep: true });
+    } else {
+      viewedFiles.value = {};
+    }
+  }, { immediate: true });
+
   const selectedFile = ref<string | null>(null);
   const batchedComments = ref<any[]>([]);
   const currentUser = ref<any>(null);
@@ -49,9 +67,10 @@ export const useReviewStore = defineStore('review', () => {
   };
   
   const markFileAsViewed = (filePath: string) => {
-    const next = new Set(viewedFiles.value);
-    next.add(filePath);
-    viewedFiles.value = next;
+    if (!mrData.value) return;
+    const file = diffs.value.find(d => d.new_path === filePath);
+    if (!file) return;
+    viewedFiles.value[filePath] = file.sha;
   };
   
   const selectFile = (filePath: string) => {
@@ -222,6 +241,49 @@ export const useReviewStore = defineStore('review', () => {
     batchedComments.value = [];
   };
 
+  const initializeMR = async (url: string) => {
+    mrUrl.value = url;
+    const provider = createProvider(url);
+    const parsed = parseUrl(url);
+    
+    await provider.initialize(parsed);
+    
+    // Sync store with provider data
+    activeProvider.value = provider;
+    mrData.value = provider.mrData;
+    diffs.value = provider.diffs;
+    currentUser.value = provider.currentUser;
+    platform.value = provider.platform;
+    remoteComments.value = provider.remoteComments;
+    codeownersRules.value = provider.codeownersRules;
+
+    // Re-review logic: check if viewed files have changed SHAs
+    if (mrData.value?.id) {
+        // viewedFiles is already loaded via watch
+        const newViewed: Record<string, string> = {};
+        for (const [path, oldSha] of Object.entries(viewedFiles.value)) {
+            const currentFile = diffs.value.find(d => d.new_path === path);
+            if (currentFile && currentFile.sha === oldSha) {
+                newViewed[path] = oldSha;
+            }
+            // else: file is missing or SHA changed -> implicit un-view
+        }
+        viewedFiles.value = newViewed;
+    }
+
+    // Cache file ownership for all changed files
+    if (codeownersRules.value.length > 0) {
+      const filePaths = diffs.value.map(f => f.new_path);
+      fileOwners.value = await window.electronAPI.matchCodeownersBulk(filePaths, codeownersRules.value);
+    } else {
+      fileOwners.value = {};
+    }
+
+    if (diffs.value.length > 0 && !selectedFile.value) {
+      selectFile(diffs.value[0].new_path);
+    }
+  };
+
   return {
     activeProvider,
     mrData,
@@ -252,6 +314,8 @@ export const useReviewStore = defineStore('review', () => {
     clearBatchedComments,
     removeRemoteComment,
     fileExpansionStates,
-    updateExpansionState
+    updateExpansionState,
+    mrUrl,
+    initializeMR
   };
 });
