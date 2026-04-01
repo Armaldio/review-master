@@ -506,9 +506,8 @@ export const useReviewStore = defineStore('review', () => {
       fileOwners.value = {};
     }
 
-    if (diffs.value.length > 0 && !selectedFile.value) {
-      selectFile(diffs.value[0].new_path);
-    }
+    // No longer auto-selecting the first file on load. 
+    // This allows ReviewView to default to the MR Overview dashboard.
   };
 
   const stopPolling = () => {

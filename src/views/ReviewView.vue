@@ -1287,7 +1287,7 @@ const lineAnnotations = computed(() => {
           <button class="btn-secondary" @click="exitReview">
             Exit Review
           </button>
-          <div class="nav-cluster">
+          <div class="nav-cluster" v-if="store.selectedFile">
             <button 
               class="btn-nav" 
               @click="goToPrevFile" 
@@ -1305,7 +1305,7 @@ const lineAnnotations = computed(() => {
           </div>
         </div>
 
-        <div class="center-controls">
+        <div class="center-controls" v-if="store.selectedFile">
           <div class="view-toggles">
             <button
               :class="{ active: viewMode === 'split' }"
@@ -1348,7 +1348,7 @@ const lineAnnotations = computed(() => {
           </div>
         </div>
 
-        <div class="primary-actions">
+        <div class="primary-actions" v-if="store.selectedFile">
           <button 
             class="btn-secondary" 
             @click="refreshMR" 
@@ -1370,6 +1370,18 @@ const lineAnnotations = computed(() => {
           </button>
           <button class="btn-primary" @click="markAsViewed" :disabled="isViewed" :class="{ 'viewed': isViewed }">
             {{ isViewed ? 'Already Viewed' : 'Mark as Viewed' }}
+          </button>
+        </div>
+        <div class="primary-actions" v-else>
+           <button 
+            class="btn-secondary" 
+            @click="refreshMR" 
+            :disabled="isRefreshing"
+            title="Refresh MR data"
+            style="margin-right: 8px; display: flex; align-items: center; gap: 4px;"
+          >
+            <span v-if="isRefreshing" class="spinner-small"></span>
+            {{ isRefreshing ? 'Refreshing...' : 'Refresh' }}
           </button>
         </div>
       </div>
@@ -1434,6 +1446,12 @@ const lineAnnotations = computed(() => {
                 <span v-for="label in store.mrData.labels" :key="label" class="label-pill">
                   {{ label }}
                 </span>
+              </div>
+
+              <div class="overview-actions">
+                <button class="btn-primary-large" @click="goToNextFile">
+                  {{ viewedCount === 0 ? 'Start Review' : 'Resume Review' }}
+                </button>
               </div>
 
               <hr class="overview-divider" />
@@ -1930,13 +1948,6 @@ input:focus + .slider {
 
 .markdown-body :deep(th) {
   background: #333;
-}
-
-.empty-description {
-  font-style: italic;
-  color: #666;
-  text-align: center;
-  margin-top: 40px;
 }
 
 .overview-item {
