@@ -115,8 +115,8 @@ const isAuthor = computed(() => {
 });
 
 const isViewed = computed(() => {
-  if (!store.selectedFile || !store.viewedFiles || !file.value) return false;
-  return store.viewedFiles[store.selectedFile] === file.value.sha;
+  if (!store.selectedFile || !file.value) return false;
+  return store.isFileViewed(store.selectedFile);
 });
 
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
@@ -1193,7 +1193,7 @@ const lineAnnotations = computed(() => {
             :key="file"
             :class="{
               active: store.selectedFile === file,
-              viewed: !!store.viewedFiles[file],
+              viewed: store.isFileViewed(file),
             }"
             @click="selectFile(file)"
           >

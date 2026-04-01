@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { useReviewStore } from "../store";
 
 export interface FileNode {
   name: string;
@@ -55,9 +56,9 @@ const sortedChildren = computed(() => {
 });
 
 const isNodeViewed = (node: FileNode): boolean => {
-    if (!node.isDir) return !!props.viewedFiles[node.path];
-    if (!node.children || Object.keys(node.children).length === 0) return true;
-    return Object.values(node.children).every(child => isNodeViewed(child));
+  if (!node.isDir) return useReviewStore().isFileViewed(node.path);
+  if (!node.children || Object.keys(node.children).length === 0) return true;
+  return Object.values(node.children).every(child => isNodeViewed(child));
 };
 
 const isSelected = computed(() => props.node.path === props.selectedFile);

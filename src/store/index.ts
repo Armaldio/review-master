@@ -221,6 +221,12 @@ export const useReviewStore = defineStore('review', () => {
   const resetViewedFiles = () => {
     viewedFiles.value = {};
   };
+
+  const isFileViewed = (filePath: string): boolean => {
+    const file = diffs.value.find(d => d.new_path === filePath);
+    if (!file) return false;
+    return viewedFiles.value[filePath] === file.sha;
+  };
   
   const selectFile = (filePath: string) => {
     selectedFile.value = filePath;
@@ -596,6 +602,7 @@ export const useReviewStore = defineStore('review', () => {
     fileOwners,
     markFileAsViewed,
     resetViewedFiles,
+    isFileViewed,
     selectFile,
     addBatchedComment,
     removeBatchedComment,
