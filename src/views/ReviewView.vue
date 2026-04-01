@@ -1606,6 +1606,36 @@ const lineAnnotations = computed(() => {
 .progress-container {
   margin-bottom: 1rem;
 }
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.progress-header span {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ccc;
+}
+.btn-icon-small {
+  background: transparent;
+  border: none;
+  color: #666;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.btn-icon-small:hover {
+  background: #333;
+  color: #f44336;
+}
+.btn-icon-small span {
+  display: flex;
+}
 .progress-bar-wrapper {
   height: 6px;
   background: #333;
@@ -2384,6 +2414,145 @@ input:focus + .slider {
 </style>
 
 <style>
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.modal-content.review-modal {
+  background: #1e1e1e;
+  width: 500px;
+  padding: 24px;
+  border-radius: 12px;
+  border: 1px solid #333;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.review-modal h3 {
+  margin-top: 0;
+  margin-bottom: 24px;
+  font-size: 20px;
+  color: #fff;
+}
+
+.form-group {
+  margin-bottom: 24px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #888;
+}
+
+.form-group textarea {
+  width: 100%;
+  min-height: 100px;
+  background: #252526;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 12px;
+  color: #eee;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.form-group textarea:focus {
+  outline: none;
+  border-color: #007acc;
+}
+
+.review-actions-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.action-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #252526;
+  border: 1px solid #333;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.action-option:hover {
+  background: #2a2d2e;
+  border-color: #444;
+}
+
+.action-option.active {
+  background: #2d2d30;
+  border-color: #007acc;
+  box-shadow: 0 0 0 1px #007acc;
+}
+
+.action-option input[type="radio"] {
+  margin-top: 4px;
+  accent-color: #007acc;
+}
+
+.action-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.action-info strong {
+  font-size: 14px;
+  color: #fff;
+}
+
+.action-info span {
+  font-size: 12px;
+  color: #888;
+}
+
+.action-option.approve.active {
+  border-color: #4caf50;
+  box-shadow: 0 0 0 1px #4caf50;
+}
+
+.action-option.approve.active input[type="radio"] {
+  accent-color: #4caf50;
+}
+
+.action-option.request-changes.active {
+  border-color: #f44336;
+  box-shadow: 0 0 0 1px #f44336;
+}
+
+.action-option.request-changes.active input[type="radio"] {
+  accent-color: #f44336;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid #333;
+}
+
 /* Gutter "+" button — unscoped so it applies inside the pierre DOM */
 .gutter-plus-btn {
   display: flex;
