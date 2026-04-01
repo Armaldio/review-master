@@ -100,7 +100,15 @@ const initializeReview = async () => {
 <template>
   <div class="init-container">
     <SecurityBanner />
-    <h2>Initialize Review</h2>
+    <div class="init-header">
+      <h2>Initialize Review</h2>
+      <div class="actions">
+        <router-link to="/settings" class="settings-link">
+          <span class="icon">⚙</span> Settings
+        </router-link>
+      </div>
+    </div>
+
     <div class="form-group">
       <label for="mrUrl">Merge Request / Pull Request URL</label>
       <input id="mrUrl" v-model="mrUrl" type="text" placeholder="https://gitlab.com/org/project/-/merge_requests/1 or https://github.com/owner/repo/pull/123" />
@@ -154,10 +162,6 @@ const initializeReview = async () => {
         </li>
       </ul>
     </div>
-    
-    <div class="actions">
-      <router-link to="/settings">Go to Settings</router-link>
-    </div>
   </div>
 </template>
 
@@ -186,6 +190,36 @@ function formatRelativeTime(dateStr: string): string {
   padding: 2.5rem;
   max-width: 800px;
   margin: 0 auto;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.init-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+.init-header h2 {
+  margin: 0;
+}
+.settings-link {
+  color: #ccc;
+  text-decoration: none;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.8rem;
+  border-radius: 6px;
+  background: #252525;
+  border: 1px solid #333;
+  transition: all 0.2s;
+}
+.settings-link:hover {
+  background: #333;
+  color: white;
+  border-color: #444;
 }
 .form-group {
   margin-bottom: 2rem;

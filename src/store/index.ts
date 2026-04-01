@@ -429,7 +429,11 @@ export const useReviewStore = defineStore('review', () => {
     const tokenKey = `token_${id}`;
 
     // Save token securely
-    await window.electronAPI.setSecret(tokenKey, token);
+    const res = await window.electronAPI.setSecret(tokenKey, token);
+    if (!res.success) {
+      console.warn(`[Store] Secure storage failed: ${res.message}. Falling back to localStorage.`);
+      localStorage.setItem(tokenKey, token);
+    }
 
     const newAccount: Account = {
       id,
