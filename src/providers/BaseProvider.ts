@@ -53,4 +53,6 @@ export abstract class BaseProvider {
   public abstract submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void>;
 
   public abstract markAsReady(): Promise<void>;
+  
+  public abstract resolveThread(discussionId: string, resolved: boolean): Promise<void>;
 }

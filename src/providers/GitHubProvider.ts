@@ -318,6 +318,12 @@ export class GitHubProvider extends BaseProvider {
     }
   }
 
+  public async resolveThread(_discussionId: string, _resolved: boolean): Promise<void> {
+    // REST API does not support resolving threads. 
+    // This would require GraphQL implementation.
+    console.warn('Resolving threads is not supported on GitHub REST API.');
+  }
+
   private async fetchAll(url: string, headers: HeadersInit): Promise<any[]> {
     let results: any[] = [];
     let nextUrl: string | null = url;

@@ -131,6 +131,7 @@ export class GitLabProvider extends BaseProvider {
               new_line: note.position.new_line,
               created_at: note.created_at,
               author_id: note.author?.id,
+              resolved: (discussion.notes[0].id === note.id) ? discussion.notes[0].resolved : discussion.resolved || false,
               reactions: note.award_emoji ? this.groupReactions(note.award_emoji) : []
             });
           }
@@ -427,6 +428,30 @@ export class GitLabProvider extends BaseProvider {
     if (this.mrData) {
       this.mrData.draft = false;
     }
+  }
+
+  public async resolveThread(discussionId: string, resolved: boolean): Promise<void> {
+    const pat = await this.getPat();
+    const projectPath = this.mrData!.encodedProjectPath;
+    const iid = this.mrData!.number;
+    const host = this.mrData!.host;
+
+    const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/discussions/${discussionId}`, {
+      method: 'PUT',
+      headers: { 'PRIVATE-TOKEN': pat!, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolved })
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to ${resolved ? 'resolve' : 'unresolve'} thread: ${res.statusText}`);
+    }
+
+    // Update local state
+    this.remoteComments.forEach(c => {
+      if (c.discussion_id === discussionId) {
+        c.resolved = resolved;
+      }
+    });
   }
 
   private async fetchAll(url: string, pat: string): Promise<any[]> {

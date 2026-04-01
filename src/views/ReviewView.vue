@@ -28,6 +28,10 @@ const isRefreshing = ref(false);
 const sidebarWidth = useStorage("review_sidebar_width", 320);
 const isResizing = ref(false);
 
+// Track manual expansion/collapse of threads
+const expandedThreads = ref<Set<string>>(new Set());
+const isResolving = ref<Record<string, boolean>>({});
+
 const startResize = (e: MouseEvent) => {
   isResizing.value = true;
   document.body.classList.add("is-resizing");
@@ -540,6 +544,20 @@ const refreshMR = async () => {
     }
 };
 
+const toggleResolve = async (discussionId: string, currentStatus: boolean | undefined) => {
+    if (!store.activeProvider) return;
+    isResolving.value[discussionId] = true;
+    try {
+        await store.activeProvider.resolveThread(discussionId, !currentStatus);
+        // State is updated inside the provider, but we need to trigger a redraw
+        annotationVersion.value++;
+    } catch (err) {
+        alert(`Failed to toggle resolution: ${(err as Error).message}`);
+    } finally {
+        isResolving.value[discussionId] = false;
+    }
+};
+
 // --- Annotation rendering ---
 
 const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HTMLElement => {
@@ -754,11 +772,65 @@ const diffOptions = computed(() => ({
 
 const createThreadElement = (comments: any[]): HTMLElement => {
   const container = document.createElement('div');
-  container.className = 'comment-thread-container';
+  const firstComment = comments[0];
+  const discussionId = firstComment.discussion_id;
+  const isResolved = !!firstComment.resolved;
+  const isExpanded = discussionId ? expandedThreads.value.has(discussionId) : true;
+  const isActuallyCollapsed = isResolved && !isExpanded;
 
-  // Group comments by their thread ID (discussion_id for GitLab, or chaining for GitHub)
-  // For simplicity here, we display them in chronological order as a single thread
-  // since they are already filtered by line number.
+  container.className = `comment-thread-container ${isResolved ? 'resolved' : ''} ${isActuallyCollapsed ? 'collapsed' : ''}`;
+
+  // Add Thread Header
+  const threadHeader = document.createElement('div');
+  threadHeader.className = 'thread-header';
+
+  const threadInfo = document.createElement('div');
+  threadInfo.className = 'thread-info';
+  if (isResolved) {
+      const badge = document.createElement('span');
+      badge.className = 'resolved-badge';
+      badge.textContent = '✓ Resolved';
+      threadInfo.appendChild(badge);
+  }
+  const summaryText = document.createElement('span');
+  summaryText.className = 'thread-summary';
+  summaryText.textContent = isActuallyCollapsed ? `${firstComment.author}: ${firstComment.body.substring(0, 50)}${firstComment.body.length > 50 ? '...' : ''}` : '';
+  threadInfo.appendChild(summaryText);
+  threadHeader.appendChild(threadInfo);
+
+  const threadActions = document.createElement('div');
+  threadActions.className = 'thread-actions';
+
+  // Resolve/Unresolve Button
+  if (discussionId) {
+      const resolveBtn = document.createElement('button');
+      resolveBtn.className = 'thread-btn';
+      resolveBtn.textContent = isResolving.value[discussionId] ? '...' : (isResolved ? 'Unresolve' : 'Resolve');
+      resolveBtn.disabled = !!isResolving.value[discussionId];
+      resolveBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleResolve(discussionId, isResolved);
+      });
+      threadActions.appendChild(resolveBtn);
+
+      if (isResolved) {
+          const toggleBtn = document.createElement('button');
+          toggleBtn.className = 'thread-btn';
+          toggleBtn.textContent = isExpanded ? 'Hide' : 'Show';
+          toggleBtn.addEventListener('click', () => {
+              if (isExpanded) expandedThreads.value.delete(discussionId);
+              else expandedThreads.value.add(discussionId);
+              annotationVersion.value++;
+          });
+          threadActions.appendChild(toggleBtn);
+      }
+  }
+  threadHeader.appendChild(threadActions);
+  container.appendChild(threadHeader);
+
+  if (isActuallyCollapsed) {
+      return container;
+  }
 
   comments.forEach((comment, index) => {
     const commentEl = document.createElement('div');
@@ -2047,15 +2119,62 @@ input:focus + .slider {
   flex-direction: column;
   gap: 4px;
   padding: 4px 12px;
-  margin: 4px 8px;
-  background: #1c2128;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  background: #1e1e1e;
+  border-left: 3px solid #007acc;
+  margin: 8px 0;
+  border-radius: 4px;
+}
+.comment-thread-container.resolved {
+  border-left-color: #4caf50;
+  opacity: 0.8;
+}
+.comment-thread-container.collapsed {
+  opacity: 0.6;
+}
+.thread-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.75rem;
+  border-radius: 4px 4px 0 0 ;
+}
+.comment-thread-container.collapsed .thread-header {
+  border-radius: 4px;
+}
+.thread-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.resolved-badge {
+  color: #4caf50;
+  font-weight: bold;
+}
+.thread-summary {
+  color: #888;
+  font-style: italic;
+}
+.thread-btn {
+  background: transparent;
+  border: none;
+  color: #007acc;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.thread-btn:hover {
+  background: rgba(0, 122, 204, 0.1);
+}
+.thread-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .comment-item {
   display: flex;
-  gap: 8px;
-  padding: 4px 0;
+  padding: 8px;
+  gap: 12px;
 }
 .comment-item:not(:last-child) {
   border-bottom: 1px solid #30363d;

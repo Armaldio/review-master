@@ -27,6 +27,7 @@ export interface Comment {
   new_line: number;
   in_reply_to_id?: string;
   discussion_id?: string;
+  resolved?: boolean;
   reactions?: Reaction[];
   is_batched?: boolean;
   range?: any; // SelectedLineRange
