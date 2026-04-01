@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, shell, dialog } from 'electron';
 import { parse, matchFile } from 'codeowners-utils';
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -37,12 +37,56 @@ const createWindow = () => {
 
   // Open the DevTools.
   mainWindow.webContents.openDevTools();
+  
+  return mainWindow;
+};
+
+const checkForUpdates = () => {
+  const options = {
+    hostname: 'api.github.com',
+    path: '/repos/Armaldio/review-master/releases/latest',
+    headers: {
+      'User-Agent': 'review-master-app'
+    }
+  };
+
+  https.get(options, (res) => {
+    let data = '';
+    res.on('data', (chunk) => { data += chunk; });
+    res.on('end', () => {
+      try {
+        const release = JSON.parse(data);
+        const latestVersion = release.tag_name.replace(/^v/, '');
+        const currentVersion = app.getVersion();
+
+        if (latestVersion !== currentVersion) {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'Update Available',
+            message: `A new version (${release.tag_name}) is available. Would you like to download it?`,
+            buttons: ['Download', 'Later']
+          }).then((result) => {
+            if (result.response === 0) {
+              shell.openExternal(release.html_url);
+            }
+          });
+        }
+      } catch (e) {
+        console.error('[UpdateCheck] Failed to parse latest release:', e);
+      }
+    });
+  }).on('error', (err) => {
+    console.error('[UpdateCheck] Error:', err);
+  });
 };
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.on('ready', () => {
+  createWindow();
+  checkForUpdates();
+
   ipcMain.handle('get-app-path', () => {
     return app.getPath('userData');
   });

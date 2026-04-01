@@ -7,9 +7,13 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+import { MakerAppImage } from '@reforged/maker-appimage';
+import { PublisherGithub } from '@electron-forge/publisher-github';
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    executableName: 'review-master',
   },
   rebuildConfig: {},
   makers: [
@@ -17,6 +21,19 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['linux']),
     new MakerRpm({}),
     new MakerDeb({}),
+    new MakerAppImage({}),
+  ],
+  publishers: [
+    {
+      name: '@electron-forge/publisher-github',
+      config: {
+        repository: {
+          owner: 'Armaldio',
+          name: 'review-master'
+        },
+        prerelease: false
+      }
+    }
   ],
   plugins: [
     new VitePlugin({

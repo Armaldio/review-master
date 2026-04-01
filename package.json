@@ -2,7 +2,11 @@
   "name": "review-master",
   "productName": "review-master",
   "version": "2.13.0",
-  "description": "My Electron application description",
+  "description": "Review app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Armaldio/review-master"
+  },
   "main": ".vite/build/main.js",
   "private": true,
   "scripts": {
@@ -28,7 +32,9 @@
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron-forge/publisher-github": "^7.11.1",
     "@electron/fuses": "^1.8.0",
+    "@reforged/maker-appimage": "^5.2.0",
     "@types/dompurify": "^3.2.0",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/marked": "^6.0.0",
@@ -38,6 +44,7 @@
     "electron": "41.0.4",
     "eslint": "^8.57.1",
     "eslint-plugin-import": "^2.32.0",
+    "js-yaml": "^4.1.1",
     "typescript": "^5.9.3",
     "vite": "^5.4.21",
     "vue-tsc": "^3.2.6"
