@@ -23,16 +23,27 @@ export abstract class BaseProvider {
    */
   public async getPat(): Promise<string | null> {
     const key = this.tokenKey;
-    if (!key) return null;
+    if (!key) {
+      console.warn('[BaseProvider] No tokenKey defined for this account.');
+      return null;
+    }
     
     const res = await (window as any).electronAPI.getSecret(key);
-    if (res.success && res.value) return res.value;
+    if (res.success && res.value) {
+      console.log(`[BaseProvider] Successfully retrieved secret for ${key} from secure storage.`);
+      return res.value;
+    }
+    
+    console.error(`[BaseProvider] Failed to retrieve secret for ${key}:`, res.error || 'Unknown error');
     
     const fallback = localStorage.getItem(key);
     if (fallback) {
-      console.warn(`[Storage] Falling back to localStorage for ${key}.`);
+      console.warn(`[BaseProvider] Falling back to localStorage for ${key}. This is less secure.`);
+      return fallback;
     }
-    return fallback;
+    
+    console.error(`[BaseProvider] No token found for ${key} in either secure storage or localStorage.`);
+    return null;
   }
 
   /**

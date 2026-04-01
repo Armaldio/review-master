@@ -58,7 +58,7 @@ export const useReviewStore = defineStore('review', () => {
   const isSecureStorageAvailable = ref<boolean>(true);
   const secureStorageErrorMessage = ref<string | null>(null);
   
-  const accounts = useStorage<Account[]>('accounts', []);
+  const accounts = useStorage<Account[]>('accounts', [], localStorage);
   const liveMRs = ref<MRShortMetadata[]>([]);
   const isLiveLoading = ref(false);
   
@@ -109,7 +109,10 @@ export const useReviewStore = defineStore('review', () => {
 
   const migrateLegacyAccounts = async () => {
     // Check if we already have accounts or if we need to migrate
-    if (accounts.value.length > 0) return;
+    if (accounts.value.length > 0) {
+      console.log('[Store] Migration skipped: accounts already present.');
+      return;
+    }
 
     console.log('[Store] Checking for legacy tokens to migrate...');
     const migrated: Account[] = [];
@@ -439,7 +442,9 @@ export const useReviewStore = defineStore('review', () => {
       lastTestedAt: new Date().toISOString()
     };
 
-    accounts.value.push(newAccount);
+    // Update accounts list using spread to ensure reactivity/persistence
+    accounts.value = [...accounts.value, newAccount];
+    console.log('[Store] Account added and persisted:', newAccount.username);
     return newAccount;
   };
 
@@ -448,6 +453,7 @@ export const useReviewStore = defineStore('review', () => {
     if (account) {
       await window.electronAPI.deleteSecret(account.tokenKey);
       accounts.value = accounts.value.filter(a => a.id !== id);
+      console.log('[Store] Account removed and persistence updated.');
     }
   };
 
