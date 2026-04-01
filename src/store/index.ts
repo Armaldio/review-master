@@ -38,14 +38,7 @@ export const useReviewStore = defineStore('review', () => {
   
   // Watch for mrData.id changes to load viewed files
   watch(() => mrData.value?.id, (newId) => {
-    if (newId) {
-      const saved = localStorage.getItem(`viewed_files_${newId}`);
-      try {
-        viewedFiles.value = saved ? JSON.parse(saved) : {};
-      } catch (e) {
-        viewedFiles.value = {};
-      }
-    } else {
+    if (!newId) {
       viewedFiles.value = {};
     }
   }, { immediate: true });
@@ -473,14 +466,21 @@ export const useReviewStore = defineStore('review', () => {
 
     // Re-review logic: check if viewed files have changed SHAs
     if (mrData.value?.id) {
-        // viewedFiles is already loaded via watch
+        // Load from storage SYNCHRONOUSLY to avoid race conditions
+        const savedViewed = localStorage.getItem(`viewed_files_${mrData.value.id}`);
+        let loaded: Record<string, string> = {};
+        try {
+            loaded = savedViewed ? JSON.parse(savedViewed) : {};
+        } catch (e) {
+            loaded = {};
+        }
+
         const newViewed: Record<string, string> = {};
-        for (const [path, oldSha] of Object.entries(viewedFiles.value)) {
+        for (const [path, oldSha] of Object.entries(loaded)) {
             const currentFile = diffs.value.find(d => d.new_path === path);
             if (currentFile && currentFile.sha === oldSha) {
                 newViewed[path] = oldSha;
             }
-            // else: file is missing or SHA changed -> implicit un-view
         }
         viewedFiles.value = newViewed;
     }

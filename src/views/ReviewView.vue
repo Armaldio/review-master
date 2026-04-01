@@ -1658,6 +1658,12 @@ input:focus + .slider {
   background: #37373d;
   color: #fff;
 }
+.file-list li.viewed {
+  opacity: 0.5;
+}
+.file-list li.viewed:hover {
+  opacity: 0.8;
+}
 .status-dot {
   width: 8px;
   height: 8px;
