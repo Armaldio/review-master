@@ -45,6 +45,17 @@ const goToNextFile = () => {
   const files = displayedFiles.value;
   if (files.length <= 1) return;
   const currentIndex = files.indexOf(store.selectedFile!);
+  
+  // Find next UNVIEWED file after current index
+  for (let i = 1; i <= files.length; i++) {
+    const nextIdx = (currentIndex + i) % files.length;
+    if (!store.isFileViewed(files[nextIdx])) {
+      selectFile(files[nextIdx]);
+      return;
+    }
+  }
+  
+  // If all are viewed, just go to the literal next file
   const nextIndex = (currentIndex + 1) % files.length;
   selectFile(files[nextIndex]);
 };
@@ -156,7 +167,7 @@ const unresolvedCount = computed(() => {
 });
 
 const totalFilesCount = computed(() => relevantFiles.value.length);
-const viewedCount = computed(() => relevantFiles.value.filter(f => !!store.viewedFiles[f]).length);
+const viewedCount = computed(() => relevantFiles.value.filter(f => store.isFileViewed(f)).length);
 
 const progressPercent = computed(() => {
   if (totalFilesCount.value === 0) return 0;
@@ -168,8 +179,8 @@ const displayedFiles = computed(() => {
 
   // Sort: Unviewed first, then viewed
   return files.sort((a, b) => {
-    const aViewed = !!store.viewedFiles[a];
-    const bViewed = !!store.viewedFiles[b];
+    const aViewed = store.isFileViewed(a);
+    const bViewed = store.isFileViewed(b);
     if (aViewed === bViewed) return a.localeCompare(b);
     return aViewed ? 1 : -1;
   });
@@ -394,14 +405,8 @@ const markAsViewed = () => {
     const current = store.selectedFile;
     store.markFileAsViewed(current);
     
-    // Find next unviewed file in the CURRENTLY displayed/filtered list
-    const unviewed = relevantFiles.value.filter(
-      (f) => f !== current && !store.viewedFiles[f],
-    );
-    
-    if (unviewed.length > 0) {
-      store.selectFile(unviewed[0]);
-    }
+    // Auto-advance to the next unviewed file
+    goToNextFile();
   }
 };
 
