@@ -1,7 +1,7 @@
 {
   "name": "review-master",
   "productName": "review-master",
-  "version": "2.22.0",
+  "version": "2.23.0",
   "description": "Review app",
   "repository": {
     "type": "git",
