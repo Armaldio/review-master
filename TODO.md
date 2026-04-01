@@ -10,3 +10,7 @@
     - Shows a button in the MR header to toggle draft status if the current user is the author.
 - [ ] Add "Refresh whole MR" functionality
     - Add a refresh button to re-fetch all MR metadata, diffs, and comments without leaving the view.
+
+
+# Not reviewed
+- Ensure closed comment threads  are displayed differently than open ones.
