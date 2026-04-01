@@ -26,6 +26,9 @@ export class GitLabProvider extends BaseProvider {
     const { projectPath, number: mrIid } = parsed;
     const encodedProjectPath = encodeURIComponent(projectPath);
 
+    // Set initial MR metadata skeleton for subsequent API calls
+    this.mrData = { host, encodedProjectPath, number: mrIid } as any;
+
     // Fetch Diffs
     const rawDiffs = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/diffs`, pat);
     this.diffs = rawDiffs.map((d: any) => ({
@@ -116,14 +119,36 @@ export class GitLabProvider extends BaseProvider {
       }
     }
 
-    // Fetch Discussions
-    const discussions = await this.fetchAll(`${host}/api/v4/projects/${encodedProjectPath}/merge_requests/${mrIid}/discussions`, pat);
-    this.remoteComments = [];
+    // Fetch MR Metadata & Comments
+    const [metadata, comments] = await Promise.all([
+      this.getMRMetadata(),
+      this.getComments()
+    ]);
+
+    this.mrData = {
+      ...metadata as any,
+      projectNamespace: project.namespace.full_path,
+      projectAncestors: ancestors,
+      sharedWithGroups: sharedGroups
+    };
+    this.remoteComments = comments;
+  }
+
+  public async getComments(): Promise<Comment[]> {
+    const pat = await this.getPat();
+    if (!this.mrData || !pat) return [];
+
+    const host = this.mrData.host;
+    const projectPath = this.mrData.encodedProjectPath;
+    const mrIid = this.mrData.number;
+
+    const discussions = await this.fetchAll(`${host}/api/v4/projects/${projectPath}/merge_requests/${mrIid}/discussions`, pat);
+    const comments: Comment[] = [];
     if (discussions) {
       for (const discussion of discussions) {
         for (const note of discussion.notes) {
           if (note.position && note.position.new_line) {
-            this.remoteComments.push({
+            comments.push({
               id: note.id.toString(),
               body: note.body,
               author: note.author?.name || note.author?.username || 'Unknown',
@@ -141,29 +166,44 @@ export class GitLabProvider extends BaseProvider {
         }
       }
     }
+    return comments;
+  }
 
-    this.mrData = {
+  public async getMRMetadata(): Promise<Partial<MRMetadata>> {
+    const pat = await this.getPat();
+    if (!this.mrData || !pat) return {};
+
+    const host = this.mrData.host;
+    const projectPath = this.mrData.encodedProjectPath;
+    const mrIid = this.mrData.number;
+
+    // Fetch MR info
+    const infoRes = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${mrIid}`, {
+      headers: { 'PRIVATE-TOKEN': pat }
+    });
+    const mrInfo = await infoRes.json();
+
+    // Fetch versions
+    const versionsRes = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${mrIid}/versions`, {
+      headers: { 'PRIVATE-TOKEN': pat }
+    });
+    const versions = await versionsRes.json();
+    const latestVersion = versions[0];
+
+    return {
       id: mrInfo.id,
-      title: mrInfo.title,
-      description: mrInfo.description,
-      state: mrInfo.state,
-      author: mrInfo.author.name,
-      author_username: mrInfo.author.username,
-      created_at: mrInfo.created_at,
-      web_url: mrInfo.web_url,
-      host,
-      owner: project.namespace.full_path,
-      repo: project.name,
-      number: mrIid,
-      projectPath,
-      headSha: latestVersion.head_commit_sha,
-      baseSha: latestVersion.base_commit_sha,
-      encodedProjectPath,
-      latestVersion,
-      projectNamespace: project.namespace.full_path,
-      projectAncestors: ancestors,
-      sharedWithGroups: sharedGroups,
-      draft: mrInfo.draft || mrInfo.work_in_progress
+              title: mrInfo.title,
+              description: mrInfo.description,
+              state: mrInfo.state,
+              author: mrInfo.author.name,
+              author_username: mrInfo.author.username,
+              created_at: mrInfo.created_at,
+              web_url: mrInfo.web_url,
+              draft: mrInfo.draft || mrInfo.work_in_progress,
+              headSha: latestVersion.head_commit_sha,
+              baseSha: latestVersion.base_commit_sha,
+              latestVersion: latestVersion,
+              updated_at: mrInfo.updated_at
     };
   }
 

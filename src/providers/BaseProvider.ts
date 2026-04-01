@@ -46,6 +46,10 @@ export abstract class BaseProvider {
 
   public abstract initialize(urlProps: any): Promise<void>;
   
+  public abstract getComments(): Promise<Comment[]>;
+  
+  public abstract getMRMetadata(): Promise<Partial<MRMetadata>>;
+
   public abstract postComment(data: any): Promise<Comment>;
   
   public abstract postReply(baseComment: Comment, body: string): Promise<Comment>;

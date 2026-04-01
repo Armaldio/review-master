@@ -558,6 +558,36 @@ const toggleResolve = async (discussionId: string, currentStatus: boolean | unde
     }
 };
 
+const handleFocus = () => {
+    store.startPolling();
+};
+
+const handleBlur = () => {
+    store.stopPolling();
+};
+
+const handleVisibilityChange = () => {
+    if (document.hidden) {
+        store.stopPolling();
+    } else {
+        store.startPolling();
+    }
+};
+
+onMounted(() => {
+    store.startPolling();
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+    store.stopPolling();
+    window.removeEventListener('focus', handleFocus);
+    window.removeEventListener('blur', handleBlur);
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+});
+
 // --- Annotation rendering ---
 
 const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HTMLElement => {
@@ -1075,12 +1105,15 @@ const lineAnnotations = computed(() => {
 
   return annotations;
 });
-
 </script>
 
 <template>
   <div class="review-container">
-    <div class="sidebar" :style="{ width: sidebarWidth + 'px' }">
+    <div 
+      class="file-sidebar" 
+      :class="{ 'flash': store.sidebarFlash }"
+      :style="{ width: sidebarWidth + 'px' }"
+    >
       <div class="sidebar-header">
         <h3>Files</h3>
         <div class="progress-container">
@@ -2407,5 +2440,24 @@ input:focus + .slider {
 :global(body.is-resizing) {
   cursor: col-resize !important;
   user-select: none !important;
+}
+
+.file-sidebar.flash {
+  animation: sidebar-pulse 2s ease-out;
+}
+
+@keyframes sidebar-pulse {
+  0% {
+    box-shadow: inset 0 0 0 0 rgba(88, 166, 255, 0);
+    background-color: transparent;
+  }
+  20% {
+    box-shadow: inset 0 0 20px 0 rgba(88, 166, 255, 0.3);
+    background-color: rgba(88, 166, 255, 0.05);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(88, 166, 255, 0);
+    background-color: transparent;
+  }
 }
 </style>

@@ -61,6 +61,13 @@ export const useReviewStore = defineStore('review', () => {
   const accounts = useStorage<Account[]>('accounts', []);
   const liveMRs = ref<MRShortMetadata[]>([]);
   const isLiveLoading = ref(false);
+  
+  // Polling State
+  const isPolling = ref(false);
+  const pollInterval = ref(10000); // Base 10s
+  const pollTimer = ref<any>(null);
+  const sidebarFlash = ref(false);
+  const lastPolledAt = ref<string | null>(null);
 
   const migrateLegacyAccounts = async () => {
     // Check if we already have accounts or if we need to migrate
@@ -449,6 +456,75 @@ export const useReviewStore = defineStore('review', () => {
     }
   };
 
+  const stopPolling = () => {
+    isPolling.value = false;
+    if (pollTimer.value) {
+      clearTimeout(pollTimer.value);
+      pollTimer.value = null;
+    }
+  };
+
+  const startPolling = () => {
+    if (isPolling.value) return;
+    isPolling.value = true;
+    pollInterval.value = 10000;
+    pollComments();
+  };
+
+  const pollComments = async () => {
+    if (!activeProvider.value || !mrData.value || !isPolling.value) return;
+
+    try {
+      const [newMetadata, newComments] = await Promise.all([
+        activeProvider.value.getMRMetadata(),
+        activeProvider.value.getComments()
+      ]);
+
+      let hasChanged = false;
+
+      // 1. Check Metadata (v2.14.0+: check updated_at or headSha)
+      if (newMetadata.updated_at !== mrData.value.updated_at || newMetadata.headSha !== mrData.value.headSha) {
+        hasChanged = true;
+      }
+
+      // 2. Check Comments (Simple count check + signature check if count is same)
+      if (newComments.length !== remoteComments.value.length) {
+        hasChanged = true;
+      } else {
+        // Quick signature check
+        const oldSig = remoteComments.value.map(c => `${c.id}:${c.resolved}:${c.body.length}`).join('|');
+        const newSig = newComments.map(c => `${c.id}:${c.resolved}:${c.body.length}`).join('|');
+        if (oldSig !== newSig) hasChanged = true;
+      }
+
+      if (hasChanged) {
+        console.log('[Store] Changes detected during polling. Syncing state...');
+        
+        // Update store
+        mrData.value = { ...mrData.value, ...newMetadata };
+        remoteComments.value = newComments;
+        
+        // Trigger Flash
+        sidebarFlash.value = true;
+        setTimeout(() => { sidebarFlash.value = false; }, 2000);
+        
+        // Reset interval
+        pollInterval.value = 10000;
+      } else {
+        // Increment interval if no changes (max 2 minutes)
+        pollInterval.value = Math.min(pollInterval.value + 10000, 120000);
+      }
+
+      lastPolledAt.value = new Date().toLocaleTimeString();
+    } catch (e) {
+      console.error('[Store] Polling failed:', e);
+    } finally {
+      if (isPolling.value) {
+        pollTimer.value = setTimeout(pollComments, pollInterval.value);
+      }
+    }
+  };
+
   return {
     activeProvider,
     mrData,
@@ -487,6 +563,12 @@ export const useReviewStore = defineStore('review', () => {
     fetchRecentActivity,
     accounts,
     addAccount,
-    removeAccount
+    removeAccount,
+    isPolling,
+    pollInterval,
+    sidebarFlash,
+    lastPolledAt,
+    startPolling,
+    stopPolling
   };
 });

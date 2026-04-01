@@ -18,11 +18,14 @@ export class GitHubProvider extends BaseProvider {
     if (!pat) throw new Error('No GitHub PAT found. Go to Settings.');
 
     const { owner, repo, number: prNumber, projectPath, host } = parsed;
-    const apiBase = 'https://api.github.com';
+    const apiBase = host || 'https://api.github.com';
     const headers: HeadersInit = {
       'Authorization': `Bearer ${pat}`,
       'Accept': 'application/vnd.github.squirrel-girl-preview+json',
     };
+
+    // Set initial MR metadata skeleton
+    this.mrData = { host: apiBase, owner, repo, number: prNumber, projectPath } as any;
 
     // Fetch PR Info
     const infoRes = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`, { headers });
@@ -81,13 +84,31 @@ export class GitHubProvider extends BaseProvider {
       }
     }
 
-    // Fetch Comments
-    const ghComments = await this.fetchAll(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`, headers);
-    this.remoteComments = [];
+    // Fetch Metadata and Comments
+    const [metadata, comments] = await Promise.all([
+      this.getMRMetadata(),
+      this.getComments()
+    ]);
+
+    this.mrData = metadata as MRMetadata;
+    this.remoteComments = comments;
+  }
+
+  public async getComments(): Promise<Comment[]> {
+    const pat = await this.getPat();
+    if (!this.mrData || !pat) return [];
+    
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${pat}`,
+      'Accept': 'application/vnd.github.squirrel-girl-preview+json',
+    };
+
+    const ghComments = await this.fetchAll(`${this.mrData.host}/repos/${this.mrData.owner}/${this.mrData.repo}/pulls/${this.mrData.number}/comments?per_page=100`, headers);
+    const comments: Comment[] = [];
     if (ghComments) {
       for (const c of ghComments) {
         if (c.path && c.line) {
-          this.remoteComments.push({
+          comments.push({
             id: c.id.toString(),
             body: c.body,
             author: c.user?.login || 'Unknown',
@@ -112,19 +133,35 @@ export class GitHubProvider extends BaseProvider {
         }
       }
     }
+    return comments;
+  }
 
-    this.mrData = {
+  public async getMRMetadata(): Promise<Partial<MRMetadata>> {
+    const pat = await this.getPat();
+    if (!this.mrData || !pat) return {};
+
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${pat}`,
+      'Accept': 'application/vnd.github.v3+json',
+    };
+
+    const res = await fetch(`${this.mrData.host}/repos/${this.mrData.owner}/${this.mrData.repo}/pulls/${this.mrData.number}`, { headers });
+    if (!res.ok) throw new Error(`Failed to fetch PR metadata: ${res.statusText}`);
+    const prData = await res.json();
+
+    return {
       title: prData.title,
-      host: apiBase,
-      owner,
-      repo,
-      number: prNumber,
-      projectPath,
+      host: this.mrData.host,
+      owner: this.mrData.owner,
+      repo: this.mrData.repo,
+      number: this.mrData.number,
+      projectPath: this.mrData.projectPath,
       headSha: prData.head.sha,
       baseSha: prData.base.sha,
       draft: prData.draft,
       author_username: prData.user.login,
-      id: prData.node_id
+      id: prData.node_id,
+      updated_at: prData.updated_at
     };
   }
 
