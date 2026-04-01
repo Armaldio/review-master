@@ -65,6 +65,11 @@ export interface MRMetadata {
   projectAncestors?: string[];
   sharedWithGroups?: string[];
   draft?: boolean;
+  labels?: string[];
+  assignees?: string[];
+  milestone?: string;
+  source_branch?: string;
+  target_branch?: string;
   updated_at: string;
 }
 

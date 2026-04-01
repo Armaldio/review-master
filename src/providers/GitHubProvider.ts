@@ -164,17 +164,27 @@ export class GitHubProvider extends BaseProvider {
     const prData = await res.json();
 
     return {
+      id: prData.id,
       title: prData.title,
+      description: prData.body,
+      state: prData.state,
+      author: prData.user.login,
+      author_username: prData.user.login,
+      created_at: prData.created_at,
+      web_url: prData.html_url,
       host: this.mrData.host,
       owner: this.mrData.owner,
       repo: this.mrData.repo,
       number: this.mrData.number,
       projectPath: this.mrData.projectPath,
+      draft: prData.draft,
+      labels: prData.labels?.map((l: any) => l.name) || [],
+      assignees: prData.assignees?.map((a: any) => a.login) || [],
+      milestone: prData.milestone?.title,
+      source_branch: prData.head.ref,
+      target_branch: prData.base.ref,
       headSha: prData.head.sha,
       baseSha: prData.base.sha,
-      draft: prData.draft,
-      author_username: prData.user.login,
-      id: prData.node_id,
       updated_at: prData.updated_at
     };
   }

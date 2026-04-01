@@ -119,6 +119,11 @@ const isViewed = computed(() => {
   return store.isFileViewed(store.selectedFile);
 });
 
+const renderedDescription = computed(() => {
+  if (!store.mrData || !store.mrData.description) return '';
+  return DOMPurify.sanitize(marked.parse(store.mrData.description) as string);
+});
+
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
 const relevantFiles = computed(() => {
@@ -1188,6 +1193,14 @@ const lineAnnotations = computed(() => {
         </div>
 
         <ul class="file-list" v-if="sidebarTab === 'files' && !useTreeView">
+          <li 
+            class="overview-item" 
+            :class="{ active: !store.selectedFile }"
+            @click="selectFile('')"
+          >
+            <span class="icon-info">ℹ️</span>
+            <span>PR Overview</span>
+          </li>
           <li
             v-for="file in displayedFiles"
             :key="file"
@@ -1210,6 +1223,15 @@ const lineAnnotations = computed(() => {
           </li>
         </ul>
         <div class="file-tree" v-else-if="sidebarTab === 'files' && useTreeView">
+          <li 
+            class="overview-item" 
+            style="list-style: none; margin-left: 0;"
+            :class="{ active: !store.selectedFile }"
+            @click="selectFile('')"
+          >
+            <span class="icon-info">ℹ️</span>
+            <span>PR Overview</span>
+          </li>
           <FileTreeItem
             :node="fileTree"
             :selectedFile="store.selectedFile"
@@ -1377,7 +1399,44 @@ const lineAnnotations = computed(() => {
             :oldFile="store.fileContents[file.new_path]?.old ? getFileContentFromChange(store.fileContents[file.new_path]?.old, file.old_path || '/dev/null') : undefined"
             :newFile="store.fileContents[file.new_path]?.new ? getFileContentFromChange(store.fileContents[file.new_path]?.new, file.new_path || '/dev/null') : undefined"
           />
-          <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
+          <div v-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
+          <div v-else-if="!file && store.mrData" class="overview-container">
+            <div class="overview-content">
+              <h1 class="overview-title">{{ store.mrData.title }}</h1>
+              
+              <div class="overview-meta">
+                <div class="meta-tuple">
+                  <span class="meta-label">Author</span>
+                  <span class="meta-value">{{ store.mrData.author || store.mrData.author_username }}</span>
+                </div>
+                <div class="meta-tuple">
+                  <span class="meta-label">Created</span>
+                  <span class="meta-value">{{ new Date(store.mrData.created_at || '').toLocaleDateString() }}</span>
+                </div>
+                <div class="meta-tuple" v-if="store.mrData.milestone">
+                  <span class="meta-label">Milestone</span>
+                  <span class="meta-value milestone-tag">{{ store.mrData.milestone }}</span>
+                </div>
+              </div>
+
+              <div class="overview-branches">
+                <span class="branch-pill target">{{ store.mrData.target_branch || 'main' }}</span>
+                <span class="branch-arrow">←</span>
+                <span class="branch-pill source">{{ store.mrData.source_branch || 'feature' }}</span>
+              </div>
+
+              <div class="overview-labels" v-if="store.mrData.labels?.length">
+                <span v-for="label in store.mrData.labels" :key="label" class="label-pill">
+                  {{ label }}
+                </span>
+              </div>
+
+              <hr class="overview-divider" />
+
+              <div class="markdown-body" v-html="renderedDescription" v-if="renderedDescription"></div>
+              <div class="empty-description" v-else>No description provided.</div>
+            </div>
+          </div>
           <div v-else class="empty-state">Select a file to review</div>
         </template>
         <template v-else-if="currentTab === 'semantic'">
@@ -1686,6 +1745,191 @@ input:focus + .slider {
 }
 .file-list li.viewed .status-dot {
   background: #4caf50;
+}
+
+/* MR Overview Styles */
+.overview-container {
+  padding: 40px;
+  background: #1e1e1e;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.overview-content {
+  max-width: 900px;
+  width: 100%;
+  color: #cccccc;
+}
+
+.overview-title {
+  font-size: 32px;
+  color: #ffffff;
+  margin-bottom: 24px;
+  font-weight: 600;
+  border-bottom: 1px solid #333;
+  padding-bottom: 16px;
+}
+
+.overview-meta {
+  display: flex;
+  gap: 32px;
+  margin-bottom: 24px;
+}
+
+.meta-tuple {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meta-label {
+  font-size: 12px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.meta-value {
+  font-size: 14px;
+  color: #eee;
+}
+
+.overview-branches {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  background: #252526;
+  padding: 12px 16px;
+  border-radius: 6px;
+  width: fit-content;
+}
+
+.branch-pill {
+  font-family: monospace;
+  background: #37373d;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.branch-arrow {
+  color: #888;
+  font-weight: bold;
+}
+
+.overview-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 32px;
+}
+
+.label-pill {
+  background: #3e3e42;
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  border: 1px solid #555;
+}
+
+.milestone-tag {
+  color: #4fc1ff;
+  font-weight: 500;
+}
+
+.overview-divider {
+  border: 0;
+  border-top: 1px solid #333;
+  margin: 32px 0;
+}
+
+.markdown-body {
+  line-height: 1.6;
+  font-size: 16px;
+}
+
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) {
+  color: #fff;
+  margin-top: 24px;
+  margin-bottom: 16px;
+}
+
+.markdown-body :deep(code) {
+  background: #37373d;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+}
+
+.markdown-body :deep(pre) {
+  background: #2d2d2d;
+  padding: 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 16px 0;
+}
+
+.markdown-body :deep(a) {
+  color: #4fc1ff;
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+}
+
+.markdown-body :deep(th), .markdown-body :deep(td) {
+  border: 1px solid #444;
+  padding: 8px 12px;
+}
+
+.markdown-body :deep(th) {
+  background: #333;
+}
+
+.empty-description {
+  font-style: italic;
+  color: #666;
+  text-align: center;
+  margin-top: 40px;
+}
+
+.overview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  color: #aaa;
+  font-weight: 500;
+  border: 1px dashed transparent;
+}
+
+.overview-item:hover {
+  background: #2a2d2e;
+  color: #fff;
+}
+
+.overview-item.active {
+  background: #37373d;
+  color: #fff;
+  border-color: #555;
+}
+
+.icon-info {
+  font-size: 14px;
 }
 
 .batch-panel {

@@ -193,18 +193,23 @@ export class GitLabProvider extends BaseProvider {
 
     return {
       id: mrInfo.id,
-              title: mrInfo.title,
-              description: mrInfo.description,
-              state: mrInfo.state,
-              author: mrInfo.author.name,
-              author_username: mrInfo.author.username,
-              created_at: mrInfo.created_at,
-              web_url: mrInfo.web_url,
-              draft: mrInfo.draft || mrInfo.work_in_progress,
-              headSha: latestVersion.head_commit_sha,
-              baseSha: latestVersion.base_commit_sha,
-              latestVersion: latestVersion,
-              updated_at: mrInfo.updated_at
+      title: mrInfo.title,
+      description: mrInfo.description,
+      state: mrInfo.state,
+      author: mrInfo.author.name,
+      author_username: mrInfo.author.username,
+      created_at: mrInfo.created_at,
+      web_url: mrInfo.web_url,
+      draft: mrInfo.draft || mrInfo.work_in_progress,
+      labels: mrInfo.labels || [],
+      assignees: mrInfo.assignees?.map((a: any) => a.username) || [],
+      milestone: mrInfo.milestone?.title,
+      source_branch: mrInfo.source_branch,
+      target_branch: mrInfo.target_branch,
+      headSha: latestVersion.head_commit_sha,
+      baseSha: latestVersion.base_commit_sha,
+      latestVersion: latestVersion,
+      updated_at: mrInfo.updated_at
     };
   }
 
