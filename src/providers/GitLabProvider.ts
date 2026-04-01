@@ -501,9 +501,8 @@ export class GitLabProvider extends BaseProvider {
     const pat = await this.getPat();
     if (!pat) return [];
 
-    // For now, we default to gitlab.com if no host is configured for the provider.
-    // In the future, we'll iterate over all configured GitLab instances.
-    const host = 'https://gitlab.com'; 
+    // Use the host configured in the provider (from the account settings)
+    const host = this.host || 'https://gitlab.com'; 
 
     try {
       // 1. Fetch current user to get details for filtering (if needed)

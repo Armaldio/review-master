@@ -478,7 +478,10 @@ export const useReviewStore = defineStore('review', () => {
     // Cache file ownership for all changed files
     if (codeownersRules.value.length > 0) {
       const filePaths = diffs.value.map(f => f.new_path);
-      fileOwners.value = await window.electronAPI.matchCodeownersBulk(filePaths, codeownersRules.value);
+      // We MUST sanitize the reactive rules to plain objects before passing to IPC bridge
+      // Electron's structured clone algorithm doesn't like Proxies
+      const sanitizedRules = JSON.parse(JSON.stringify(codeownersRules.value));
+      fileOwners.value = await window.electronAPI.matchCodeownersBulk(filePaths, sanitizedRules);
     } else {
       fileOwners.value = {};
     }
