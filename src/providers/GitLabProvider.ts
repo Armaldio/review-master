@@ -1,5 +1,5 @@
 import { BaseProvider } from './BaseProvider';
-import { Comment, DiffFile, MRMetadata, CodeownerRule, User } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata } from './types';
 import { useStorage } from '@vueuse/core';
 
 export class GitLabProvider extends BaseProvider {
@@ -452,6 +452,49 @@ export class GitLabProvider extends BaseProvider {
         c.resolved = resolved;
       }
     });
+  }
+
+  public async getActiveMRs(): Promise<MRShortMetadata[]> {
+    const pat = await this.getPat();
+    if (!pat) return [];
+
+    // For now, we default to gitlab.com if no host is configured for the provider.
+    // In the future, we'll iterate over all configured GitLab instances.
+    const host = 'https://gitlab.com'; 
+
+    try {
+      // 1. Fetch current user to get details for filtering (if needed)
+      const userRes = await fetch(`${host}/api/v4/user`, {
+        headers: { 'PRIVATE-TOKEN': pat }
+      });
+      if (!userRes.ok) return [];
+      const user = await userRes.json();
+
+      // 2. Fetch MRs: Assigned to me, or where I am a reviewer
+      // GitLab has specific 'scope' for assigned, but for reviewers we use 'reviewer_id' or 'reviewer_username'
+      const assignedMrs = await this.fetchAll(`${host}/api/v4/merge_requests?state=opened&scope=assigned_to_me`, pat);
+      const reviewerMrs = await this.fetchAll(`${host}/api/v4/merge_requests?state=opened&scope=all&reviewer_id=${user.id}`, pat);
+
+      const allMrs = [...assignedMrs, ...reviewerMrs];
+      
+      // 3. De-duplicate (MR could be assigned AND reviewed by the same person)
+      const uniqueMrs = Array.from(new Map(allMrs.map(mr => [mr.id, mr])).values());
+
+      return uniqueMrs.map((mr: any) => ({
+        id: mr.id,
+        projectPath: mr.project_id.toString(), // or full path if available
+        title: mr.title,
+        url: mr.web_url,
+        repository: mr.references?.full || mr.web_url.split('/-/')[0].split('/').slice(-2).join('/'),
+        author: mr.author.name,
+        updated_at: mr.updated_at,
+        platform: 'gitlab',
+        draft: mr.work_in_progress || mr.draft
+      }));
+    } catch (err) {
+      console.error('[GitLabProvider] Failed to fetch active MRs:', err);
+      return [];
+    }
   }
 
   private async fetchAll(url: string, pat: string): Promise<any[]> {

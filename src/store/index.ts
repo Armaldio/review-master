@@ -3,8 +3,8 @@ import { ref, shallowRef, computed, watch } from 'vue';
 import { useStorage } from '@vueuse/core';
 import type { BaseProvider } from '../providers/BaseProvider';
 import { parseDiffFromFile } from '@pierre/diffs';
-import { createProvider, parseUrl } from '../providers';
-import type { DiffFile } from '../providers/types';
+import { createProvider, parseUrl, GitLabProvider, GitHubProvider } from '../providers';
+import type { DiffFile, MRShortMetadata } from '../providers/types';
 
 export const getLanguage = (filePath: string) => {
   const ext = filePath.split('.').pop()?.toLowerCase();
@@ -57,6 +57,46 @@ export const useReviewStore = defineStore('review', () => {
   const fileOwners = ref<Record<string, string[]>>({});
   const isSecureStorageAvailable = ref<boolean>(true);
   const secureStorageErrorMessage = ref<string | null>(null);
+  
+  const liveMRs = ref<MRShortMetadata[]>([]);
+  const isLiveLoading = ref(false);
+
+  const fetchRecentActivity = async () => {
+    isLiveLoading.value = true;
+    try {
+      const providers: any[] = [];
+      
+      // Check GitLab
+      const glPat = await window.electronAPI.getSecret('gitlab_pat');
+      if (glPat.success && glPat.value) {
+        providers.push(new GitLabProvider());
+      } else {
+        const fallback = localStorage.getItem('gitlab_pat');
+        if (fallback) providers.push(new GitLabProvider());
+      }
+
+      // Check GitHub
+      const ghPat = await window.electronAPI.getSecret('github_pat');
+      if (ghPat.success && ghPat.value) {
+        providers.push(new GitHubProvider());
+      } else {
+        const fallback = localStorage.getItem('github_pat');
+        if (fallback) providers.push(new GitHubProvider());
+      }
+
+      const results = await Promise.all(providers.map(p => p.getActiveMRs()));
+      const flatResults = results.flat() as MRShortMetadata[];
+      
+      // Sort by updated_at desc
+      liveMRs.value = flatResults.sort((a, b) => 
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      );
+    } catch (e) {
+      console.error('[Store] Failed to fetch recent activity:', e);
+    } finally {
+      isLiveLoading.value = false;
+    }
+  };
 
   const initializeStorageStatus = async () => {
     const res = await window.electronAPI.checkStorage();
@@ -316,6 +356,9 @@ export const useReviewStore = defineStore('review', () => {
     fileExpansionStates,
     updateExpansionState,
     mrUrl,
-    initializeMR
+    initializeMR,
+    liveMRs,
+    isLiveLoading,
+    fetchRecentActivity
   };
 });

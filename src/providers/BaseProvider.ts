@@ -1,4 +1,4 @@
-import { Comment, DiffFile, MRMetadata, CodeownerRule, Platform, User } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, Platform, User, MRShortMetadata } from './types';
 
 export abstract class BaseProvider {
   public abstract platform: Platform;
@@ -55,4 +55,6 @@ export abstract class BaseProvider {
   public abstract markAsReady(): Promise<void>;
   
   public abstract resolveThread(discussionId: string, resolved: boolean): Promise<void>;
+
+  public abstract getActiveMRs(): Promise<MRShortMetadata[]>;
 }

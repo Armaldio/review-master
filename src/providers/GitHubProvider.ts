@@ -1,5 +1,5 @@
 import { BaseProvider } from './BaseProvider';
-import { Comment, DiffFile, MRMetadata, CodeownerRule, User } from './types';
+import { Comment, DiffFile, MRMetadata, CodeownerRule, User, MRShortMetadata } from './types';
 
 export class GitHubProvider extends BaseProvider {
   public platform: 'github' = 'github' as const;
@@ -309,12 +309,58 @@ export class GitHubProvider extends BaseProvider {
       headers
     });
 
-    if (!res.ok) {
+    if (res.ok) {
+      if (this.mrData) {
+        this.mrData.draft = false;
+      }
+    } else {
       throw new Error(`Failed to mark as ready: ${res.statusText}`);
     }
+  }
 
-    if (this.mrData) {
-      this.mrData.draft = false;
+  public async getActiveMRs(): Promise<MRShortMetadata[]> {
+    const pat = await this.getPat();
+    if (!pat) return [];
+
+    const apiBase = 'https://api.github.com';
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${pat}`,
+      'Accept': 'application/vnd.github.v3+json',
+    };
+
+    try {
+      // Use Search API to fetch PRs where user is involved (author, assignee, or reviewer)
+      // q=is:pr+is:open+archived:false+(assignee:@me+OR+author:@me+OR+reviewer-requested:@me)
+      const query = encodeURIComponent('is:pr is:open archived:false (assignee:@me author:@me reviewer-requested:@me)');
+      const res = await fetch(`${apiBase}/search/issues?q=${query}`, { headers });
+      
+      if (!res.ok) {
+        console.error('[GitHubProvider] Search API failed:', res.statusText);
+        return [];
+      }
+
+      const data = await res.json();
+      const items = data.items || [];
+
+      return items.map((pr: any) => {
+        // GitHub Search API returns issue-like objects. repository_url is like "https://api.github.com/repos/owner/repo"
+        const repoFullName = pr.repository_url.split('/repos/')[1];
+        
+        return {
+          id: pr.id,
+          projectPath: repoFullName,
+          title: pr.title,
+          url: pr.html_url,
+          repository: repoFullName,
+          author: pr.user.login,
+          updated_at: pr.updated_at,
+          platform: 'github',
+          draft: pr.draft
+        };
+      });
+    } catch (err) {
+      console.error('[GitHubProvider] Failed to fetch active MRs:', err);
+      return [];
     }
   }
 

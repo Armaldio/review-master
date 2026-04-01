@@ -71,3 +71,15 @@ export interface CodeownerRule {
   pattern: string;
   owners: string[];
 }
+
+export interface MRShortMetadata {
+  id: string | number;
+  projectPath: string;
+  title: string;
+  url: string;
+  repository: string;
+  author: string;
+  updated_at: string;
+  platform: Platform;
+  draft?: boolean;
+}
