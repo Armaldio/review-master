@@ -81,7 +81,7 @@ onMounted(async () => {
       <div class="form-group">
         <label>
           Personal Access Token
-          <a v-if="newAccount.platform === 'gitlab'" href="#" @click.prevent="openExternal(newAccount.host + '/-/profile/personal_access_tokens?name=ReviewMaster&scopes=api,read_user')" class="gen-link">Generate</a>
+          <a v-if="newAccount.platform === 'gitlab'" href="#" @click.prevent="openExternal(newAccount.host + '/-/user_settings/personal_access_tokens?name=ReviewMaster&scopes=api,read_user')" class="gen-link">Generate</a>
           <a v-else href="#" @click.prevent="openExternal('https://github.com/settings/tokens/new?scopes=repo,read:org,read:user,user:email')" class="gen-link">Generate</a>
         </label>
         <input v-model="newAccount.token" type="password" :placeholder="newAccount.platform === 'gitlab' ? 'glpat-...' : 'ghp_...'" />
