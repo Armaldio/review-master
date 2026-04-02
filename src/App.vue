@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// Main App Component
+import ToastContainer from './components/ToastContainer.vue';
 </script>
 
 <template>
   <div class="app-container">
     <router-view />
+    <ToastContainer />
   </div>
 </template>
 
@@ -15,6 +16,5 @@
   width: 100%;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
 }
 </style>

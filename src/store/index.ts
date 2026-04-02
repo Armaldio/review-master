@@ -69,6 +69,24 @@ export const useReviewStore = defineStore('review', () => {
   const sidebarFlash = ref(false);
   const lastPolledAt = ref<string | null>(null);
 
+  // --- Toasts Store ---
+  const toasts = ref<Array<{ id: string; message: string; type: 'info' | 'success' | 'error'; duration: number }>>([]);
+
+  const addToast = (message: string, type: 'info' | 'success' | 'error' = 'info', duration = 3000) => {
+    const id = crypto.randomUUID();
+    toasts.value.push({ id, message, type, duration });
+    if (duration > 0) {
+      setTimeout(() => {
+        removeToast(id);
+      }, duration);
+    }
+    return id;
+  };
+
+  const removeToast = (id: string) => {
+    toasts.value = toasts.value.filter(t => t.id !== id);
+  };
+
   // --- Computed Analytics ---
 
   /**
@@ -624,6 +642,9 @@ export const useReviewStore = defineStore('review', () => {
     startPolling,
     stopPolling,
     allDiscussions,
-    commentStatsByFile
+    commentStatsByFile,
+    toasts,
+    addToast,
+    removeToast
   };
 });

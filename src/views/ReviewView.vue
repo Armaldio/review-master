@@ -12,7 +12,9 @@ import EmptyState from "../components/EmptyState.vue";
 import { parseDiffFromFile } from "@pierre/diffs";
 import ignore from "ignore";
 import { marked } from "marked";
+import { markedEmoji } from "marked-emoji";
 import DOMPurify from "dompurify";
+import Dialog from "../components/Dialog.vue";
 
 const router = useRouter();
 const store = useReviewStore();
@@ -100,6 +102,29 @@ const reviewAction = ref<'approve' | 'request_changes' | 'comment'>('comment');
 // File Comment State
 const fileCommentBody = ref('');
 
+// Dialog states
+const confirmDialog = ref({
+    show: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Confirm',
+    cancelLabel: 'Cancel',
+    type: 'info' as 'info' | 'danger' | 'warning',
+    onConfirm: () => {}
+});
+
+const showConfirm = (title: string, message: string, onConfirm: () => void, type: 'info' | 'danger' | 'warning' = 'info', confirmLabel = 'Confirm') => {
+    confirmDialog.value = {
+        show: true,
+        title,
+        message,
+        confirmLabel,
+        cancelLabel: 'Cancel',
+        type,
+        onConfirm
+    };
+};
+
 const exitReview = () => {
   router.push("/");
 };
@@ -130,10 +155,104 @@ const isViewed = computed(() => {
   return store.isFileViewed(store.selectedFile);
 });
 
+// --- Emoji Mapping ---
+const EMOJI_MAP = {
+  'plus_one': '👍',
+  'thumbsup': '👍',
+  '-1': '👎',
+  'thumbsdown': '👎',
+  'laugh': '😄',
+  'smile': '😄',
+  'tada': '🎉',
+  'hooray': '🎉',
+  'heart': '❤️',
+  'rocket': '🚀',
+  'eyes': '👀',
+  'confused': '😕',
+  'white_check_mark': '✅',
+  'check': '✅',
+  'x': '❌',
+  'warning': '⚠️',
+  'bulb': '💡',
+  'book': '📖',
+  'memo': '📝',
+  'art': '🎨',
+  'bug': '🐛',
+  'fire': '🔥',
+  'sparkles': '✨',
+  'shipit': '🚀',
+  'point_up': '☝️',
+  'clap': '👏',
+  'folded_hands': '🙏',
+  'raising_hand': '🙋',
+  'thinking_face': '🤔',
+  'thinking': '🤔',
+  'disappointed': '😞',
+  'cry': '😢',
+  'ok_hand': '👌',
+  'v': '✌️',
+  'punch': '👊',
+  'fist': '👊',
+  'muscle': '💪',
+  'pray': '🙏',
+  'gem': '💎',
+  'crown': '👑',
+  'star': '⭐',
+  'heavy_check_mark': '✔️',
+};
+
+marked.use(markedEmoji({
+  emojis: EMOJI_MAP
+}));
+
+const rewriteImageUrls = (markdown: string) => {
+  if (!store.mrData) return markdown;
+  const { host, projectPath, source_branch, platform } = store.mrData;
+  
+  // Basic relative path rewriting for GitLab
+  if (store.platform === 'gitlab' && host && projectPath) {
+    // Rewrite uploads
+    markdown = markdown.replace(/src="\/uploads\//g, `src="${host}/${projectPath}/uploads/`);
+    markdown = markdown.replace(/!\[(.*?)\]\(\/uploads\//g, `![ $1 ](${host}/${projectPath}/uploads/`);
+    
+    // Rewrite repository files
+    const branch = source_branch || 'main';
+    markdown = markdown.replace(/src="(?!\/uploads\/)(?!\w+:\/\/)\/?/g, `src="${host}/${projectPath}/-/raw/${branch}/`);
+    markdown = markdown.replace(/!\[(.*?)\]\((?!\/uploads\/)(?!\w+:\/\/)\/?/g, `![ $1 ](${host}/${projectPath}/-/raw/${branch}/`);
+  } else if (store.platform === 'github' && store.mrData.owner && store.mrData.repo) {
+    const { owner, repo } = store.mrData;
+    const branch = source_branch || 'main';
+    markdown = markdown.replace(/src="(?!\w+:\/\/)\/?/g, `src="https://raw.githubusercontent.com/${owner}/${repo}/${branch}/`);
+    markdown = markdown.replace(/!\[(.*?)\]\((?!\w+:\/\/)\/?/g, `![ $1 ](https://raw.githubusercontent.com/${owner}/${repo}/${branch}/`);
+  }
+  
+  return markdown;
+};
+
 const renderedDescription = computed(() => {
   if (!store.mrData || !store.mrData.description) return '';
-  return DOMPurify.sanitize(marked.parse(store.mrData.description) as string);
+  const rewritten = rewriteImageUrls(store.mrData.description);
+  return DOMPurify.sanitize(marked.parse(rewritten) as string, {
+      ADD_TAGS: ['img'],
+      ADD_ATTR: ['src', 'alt', 'width', 'height']
+  });
 });
+
+const handleLinkClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const anchor = target.closest('a');
+    if (anchor && anchor.href && (anchor.href.startsWith('http') || anchor.href.startsWith('https'))) {
+        e.preventDefault();
+        window.electronAPI.openExternal(anchor.href);
+    }
+};
+
+const openMRInBrowser = () => {
+    if (store.mrData?.web_url) {
+        window.electronAPI.openExternal(store.mrData.web_url);
+        store.addToast('Opening in browser...', 'info', 2000);
+    }
+};
 
 const modifiedFiles = computed(() => store.diffs.map((d) => d.new_path));
 
@@ -395,9 +514,16 @@ const addReaction = async (comment: any, emojiChar: string) => {
 };
 
 const resetProgress = () => {
-  if (confirm("Are you sure you want to reset all viewed status for this review?")) {
-    store.resetViewedFiles();
-  }
+  showConfirm(
+    "Reset Progress",
+    "Are you sure you want to reset all viewed status for this review?",
+    () => {
+      store.resetViewedFiles();
+      store.addToast("Progress reset successfully", "success");
+    },
+    'danger',
+    "Reset Progress"
+  );
 };
 
 const markAsViewed = () => {
@@ -438,15 +564,22 @@ const postReply = async (threadComment: any, body: string) => {
 
 const deleteRemoteComment = async (comment: any) => {
   if (!store.activeProvider) return;
-  if (confirm('Are you sure you want to delete this comment?')) {
+  showConfirm(
+    'Delete Comment',
+    'Are you sure you want to delete this comment?',
+    async () => {
       try {
-          await store.activeProvider.deleteComment(comment.id);
+          await store.activeProvider!.deleteComment(comment.id);
           store.removeRemoteComment(comment.id);
           annotationVersion.value++;
+          store.addToast('Comment deleted', 'success');
       } catch (err) {
-          alert(`Delete failed: ${(err as Error).message}`);
+          store.addToast(`Delete failed: ${(err as Error).message}`, 'error');
       }
-  }
+    },
+    'danger',
+    'Delete'
+  );
 };
 
 const startEdit = (comment: any) => {
@@ -460,6 +593,28 @@ const cancelEdit = () => {
     editingBody.value = '';
     annotationVersion.value++;
 };
+
+// --- Review Modal Advanced Logic ---
+watch(showReviewModal, (showing) => {
+    if (showing) {
+        // Default action based on pending comments
+        if (store.batchedComments.length > 0) {
+            reviewAction.value = 'comment';
+        } else {
+            reviewAction.value = 'approve';
+        }
+    }
+});
+
+const isApproveDisabled = computed(() => {
+    return reviewComment.value.trim().length > 0;
+});
+
+watch(reviewComment, (newVal) => {
+    if (newVal.trim().length > 0) {
+        reviewAction.value = 'comment';
+    }
+});
 
 const saveEdit = async (comment: any) => {
     if (!store.activeProvider) return;
@@ -477,8 +632,9 @@ const saveEdit = async (comment: any) => {
         if (c) c.body = newBody;
 
         cancelEdit();
+        store.addToast('Comment updated', 'success');
     } catch (err) {
-        alert(`Edit failed: ${(err as Error).message}`);
+        store.addToast(`Edit failed: ${(err as Error).message}`, 'error');
     }
 };
 
@@ -501,9 +657,9 @@ const sendBatchComments = async () => {
     }
     store.clearBatchedComments();
     annotationVersion.value++;
-    alert("All batched comments sent!");
+    store.addToast("All batched comments sent!", "success");
   } catch (err) {
-    alert(`Error sending batch: ${(err as Error).message}`);
+    store.addToast(`Error sending batch: ${(err as Error).message}`, "error");
   } finally {
     isSubmitting.value = false;
   }
@@ -514,11 +670,11 @@ const submitReview = async () => {
     isSubmitting.value = true;
     try {
         await store.activeProvider.submitReview(reviewComment.value, reviewAction.value);
-        alert(`Review submitted as ${reviewAction.value}!`);
+        store.addToast(`Review submitted as ${reviewAction.value}!`, "success");
         showReviewModal.value = false;
         reviewComment.value = '';
     } catch (err) {
-        alert(`Review failed: ${(err as Error).message}`);
+        store.addToast(`Review failed: ${(err as Error).message}`, "error");
     } finally {
         isSubmitting.value = false;
     }
@@ -535,8 +691,9 @@ const postFileComment = async () => {
         store.remoteComments.push(comment);
         fileCommentBody.value = '';
         annotationVersion.value++;
+        store.addToast('File comment posted', 'success');
     } catch (err) {
-        alert(`File comment failed: ${(err as Error).message}`);
+        store.addToast(`File comment failed: ${(err as Error).message}`, 'error');
     } finally {
         isSubmitting.value = false;
     }
@@ -547,10 +704,9 @@ const markAsReady = async () => {
     isMarkingAsReady.value = true;
     try {
         await store.activeProvider.markAsReady();
-        // The provider update its own state internally, 
-        // mrData.draft is a reactive property so the button will disappear.
+        store.addToast('MR marked as ready', 'success');
     } catch (err) {
-        alert(`Failed to mark as ready: ${(err as Error).message}`);
+        store.addToast(`Failed to mark as ready: ${(err as Error).message}`, 'error');
     } finally {
         isMarkingAsReady.value = false;
     }
@@ -561,8 +717,9 @@ const refreshMR = async () => {
     isRefreshing.value = true;
     try {
         await store.initializeMR(store.mrUrl);
+        store.addToast('Refreshed successfully', 'success', 2000);
     } catch (err) {
-        alert(`Refresh failed: ${(err as Error).message}`);
+        store.addToast(`Refresh failed: ${(err as Error).message}`, 'error');
     } finally {
         isRefreshing.value = false;
     }
@@ -573,10 +730,10 @@ const toggleResolve = async (discussionId: string, currentStatus: boolean | unde
     isResolving.value[discussionId] = true;
     try {
         await store.activeProvider.resolveThread(discussionId, !currentStatus);
-        // State is updated inside the provider, but we need to trigger a redraw
         annotationVersion.value++;
+        store.addToast(`Thread ${!currentStatus ? 'resolved' : 'unresolved'}`, 'success', 2000);
     } catch (err) {
-        alert(`Failed to toggle resolution: ${(err as Error).message}`);
+        store.addToast(`Failed to toggle resolution: ${(err as Error).message}`, 'error');
     } finally {
         isResolving.value[discussionId] = false;
     }
@@ -672,13 +829,14 @@ const createInlineEditorElement = (lineNumber: number, side: AnnotationSide): HT
         store.remoteComments.push({
           ...data,
           author: store.currentUser?.username || store.currentUser?.name || 'You',
-          avatar_url: store.currentUser?.avatar_url, // Ensure avatar is shown immediately
+          avatar_url: store.currentUser?.avatar_url,
           created_at: new Date().toISOString(),
         });
         inlineCommentLocation.value = null;
         annotationVersion.value++;
+        store.addToast('Comment sent', 'success');
       } catch (err) {
-        alert(`Error: ${(err as Error).message}`);
+        store.addToast(`Error: ${(err as Error).message}`, 'error');
         sendBtn.disabled = false;
         sendBtn.textContent = 'Send Now';
       }
@@ -1287,6 +1445,9 @@ const lineAnnotations = computed(() => {
           <button class="btn-secondary" @click="exitReview">
             Exit Review
           </button>
+          <button class="btn-secondary" @click="openMRInBrowser" title="Open in browser">
+            Open in Browser
+          </button>
           <div class="nav-cluster" v-if="store.selectedFile">
             <button 
               class="btn-nav" 
@@ -1456,7 +1617,7 @@ const lineAnnotations = computed(() => {
 
               <hr class="overview-divider" />
 
-              <div class="markdown-body" v-html="renderedDescription" v-if="renderedDescription"></div>
+              <div class="markdown-body" v-html="renderedDescription" v-if="renderedDescription" @click="handleLinkClick"></div>
               <div class="empty-description" v-else>No description provided.</div>
             </div>
           </div>
@@ -1538,45 +1699,90 @@ const lineAnnotations = computed(() => {
   <!-- Review Modal -->
   <div class="modal-overlay" v-if="showReviewModal" @click.self="showReviewModal = false">
     <div class="modal-content review-modal">
-        <h3>Submit Review</h3>
-        <div class="form-group">
-            <label>Global Comment (optional)</label>
-            <textarea v-model="reviewComment" placeholder="Leave a summary comment..."></textarea>
+        <div class="modal-header">
+            <h3>Finish Review</h3>
+            <button class="close-btn" @click="showReviewModal = false">&times;</button>
         </div>
-        <div class="form-group">
-            <label>Action</label>
-            <div class="review-actions-grid">
-                <label class="action-option" :class="{ active: reviewAction === 'comment' }">
-                    <input type="radio" value="comment" v-model="reviewAction" />
-                    <div class="action-info">
-                        <strong>Comment</strong>
-                        <span>Submit general feedback without approving.</span>
+
+        <div class="modal-scroll-area">
+            <!-- Pending Comments List -->
+            <div class="pending-comments-section" v-if="store.batchedComments.length > 0">
+                <label class="section-label">Pending Comments ({{ store.batchedComments.length }})</label>
+                <div class="pending-comments-list">
+                    <div v-for="c in store.batchedComments" :key="c.id" class="pending-comment-item">
+                        <div class="comment-loc">{{ c.new_path }} : L{{ c.new_line }}</div>
+                        <div class="comment-preview">{{ c.body }}</div>
                     </div>
-                </label>
-                <label class="action-option approve" :class="{ active: reviewAction === 'approve' }">
-                    <input type="radio" value="approve" v-model="reviewAction" />
-                    <div class="action-info">
-                        <strong>Approve</strong>
-                        <span>Submit feedback and approve these changes.</span>
-                    </div>
-                </label>
-                <label class="action-option request-changes" :class="{ active: reviewAction === 'request_changes' }">
-                    <input type="radio" value="request_changes" v-model="reviewAction" />
-                    <div class="action-info">
-                        <strong>{{ store.platform === 'gitlab' ? 'Request Changes' : 'Request Changes' }}</strong>
-                        <span>Submit feedback that must be addressed.</span>
-                    </div>
-                </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="section-label">Review Summary (optional)</label>
+                <textarea 
+                    v-model="reviewComment" 
+                    placeholder="Describe the overall state of the review..."
+                    rows="4"
+                ></textarea>
+            </div>
+
+            <div class="form-group">
+                <label class="section-label">Review Outcome</label>
+                <div class="review-actions-grid">
+                    <label class="action-option" :class="{ active: reviewAction === 'comment' }">
+                        <input type="radio" value="comment" v-model="reviewAction" />
+                        <div class="action-icon-box info">💬</div>
+                        <div class="action-info">
+                            <strong>Comment</strong>
+                            <span>Post general feedback without a formal status.</span>
+                        </div>
+                    </label>
+                    <label 
+                        class="action-option approve" 
+                        :class="{ 
+                            active: reviewAction === 'approve',
+                            disabled: isApproveDisabled
+                        }"
+                    >
+                        <input type="radio" value="approve" v-model="reviewAction" :disabled="isApproveDisabled" />
+                        <div class="action-icon-box success">✅</div>
+                        <div class="action-info">
+                            <strong>Approve</strong>
+                            <span>LGTM! This merge request is ready to be merged.</span>
+                        </div>
+                        <div class="disabled-hint" v-if="isApproveDisabled">
+                            (Cannot approve while typing summary)
+                        </div>
+                    </label>
+                    <label class="action-option request-changes" :class="{ active: reviewAction === 'request_changes' }">
+                        <input type="radio" value="request_changes" v-model="reviewAction" />
+                        <div class="action-icon-box danger">❌</div>
+                        <div class="action-info">
+                            <strong>Request Changes</strong>
+                            <span>Block merge until feedback is addressed.</span>
+                        </div>
+                    </label>
+                </div>
             </div>
         </div>
+
         <div class="modal-footer">
-            <button class="btn-secondary" @click="showReviewModal = false">Cancel</button>
-            <button class="btn-primary" @click="submitReview" :disabled="isSubmitting">
+            <button class="btn-secondary" @click="showReviewModal = false">Cancel Review</button>
+            <button 
+                class="btn-primary-large submit-btn" 
+                @click="submitReview" 
+                :disabled="isSubmitting"
+            >
                 {{ isSubmitting ? 'Submitting...' : 'Submit Review' }}
             </button>
         </div>
     </div>
   </div>
+
+  <Dialog 
+    v-bind="confirmDialog" 
+    v-model:show="confirmDialog.show" 
+    @confirm="confirmDialog.onConfirm" 
+  />
 
   <EmptyState v-if="!store.selectedFile && sidebarTab === 'files' && !isRefreshing" />
 </template>
@@ -1929,10 +2135,19 @@ input:focus + .slider {
 .markdown-body :deep(a) {
   color: #4fc1ff;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .markdown-body :deep(a:hover) {
   text-decoration: underline;
+}
+
+.markdown-body :deep(img) {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 16px 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  border: 1px solid #333;
 }
 
 .markdown-body :deep(table) {
@@ -2051,33 +2266,65 @@ input:focus + .slider {
   border-radius: 0 4px 4px 0;
 }
 .btn-primary {
-  background: #4caf50;
+  background: #2da042;
   color: white;
-  border: none;
+  border: 1px solid rgba(27, 31, 35, 0.15);
   padding: 0.5rem 1rem;
   border-radius: 4px;
   cursor: pointer;
+  font-weight: 600;
+  transition: background-color 0.2s cubic-bezier(0.3, 0, 0.5, 1);
 }
 .btn-primary:hover {
-  background: #45a049;
+  background: #2c974b;
 }
 .btn-primary:active {
-  transform: translateY(1px);
+  background: #298e46;
+  box-shadow: inset 0 0.15em 0.3em rgba(27, 31, 35, 0.15);
 }
 .btn-primary.viewed {
-  background: #30363d;
+  background: #1d2125;
   color: #8b949e;
-  border: 1px solid #444;
+  border: 1px solid #30363d;
   cursor: default;
   box-shadow: none;
 }
+.btn-primary-large {
+  background: linear-gradient(135deg, #e36021 0%, #fc6d26 100%);
+  color: white;
+  border: none;
+  padding: 12px 28px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  box-shadow: 0 4px 15px rgba(227, 96, 33, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.btn-primary-large:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 25px rgba(227, 96, 33, 0.4);
+  filter: brightness(1.1);
+}
+.btn-primary-large:active {
+  transform: translateY(0) scale(0.98);
+}
 .btn-secondary {
   background: #333;
-  color: white;
-  border: 1px solid #555;
+  color: #eee;
+  border: 1px solid #444;
   padding: 0.5rem 1rem;
   border-radius: 4px;
   cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.btn-secondary:hover {
+  background: #444;
+  border-color: #555;
+  color: #fff;
 }
 
 .diff-area {
@@ -2255,92 +2502,178 @@ input:focus + .slider {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.8);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 10000;
+    backdrop-filter: blur(8px);
 }
-.modal-content {
+.review-modal {
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 12px;
+    width: 700px;
+    max-width: 95vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8);
+    padding: 0; /* Managed by children */
+    overflow: hidden;
+}
+.modal-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     background: #252526;
-    border: 1px solid #444;
-    border-radius: 8px;
-    width: 600px;
-    max-width: 90vw;
-    padding: 24px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
-.modal-content h3 {
-    margin: 0 0 20px 0;
+.modal-header h3 {
+    margin: 0;
+    font-size: 18px;
     color: #fff;
 }
-.form-group {
-    margin-bottom: 20px;
+.modal-scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
 }
-.form-group label {
+.section-label {
     display: block;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+}
+.pending-comments-section {
+    margin-bottom: 24px;
+    background: rgba(227, 96, 33, 0.05);
+    border: 1px solid rgba(227, 96, 33, 0.2);
+    border-radius: 8px;
+    padding: 16px;
+}
+.pending-comments-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.pending-comment-item {
+    background: #2d2d2d;
+    padding: 8px 12px;
+    border-radius: 4px;
+    border-left: 3px solid #e36209;
+}
+.comment-loc {
+    font-size: 11px;
     color: #8b949e;
-    font-size: 0.9rem;
+    margin-bottom: 4px;
+    font-family: monospace;
+}
+.comment-preview {
+    font-size: 13px;
+    color: #eee;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .form-group textarea {
     width: 100%;
-    height: 120px;
-    background: #1e1e1e;
-    border: 1px solid #444;
-    border-radius: 4px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
     padding: 12px;
-    color: #ccc;
+    color: #c9d1d9;
     font-family: inherit;
     resize: vertical;
+    transition: border-color 0.2s;
+}
+.form-group textarea:focus {
+    border-color: #e36209;
+    outline: none;
 }
 .review-actions-grid {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr;
     gap: 12px;
 }
 .action-option {
     display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px;
-    border: 1px solid #333;
-    border-radius: 6px;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    border: 1px solid #30363d;
+    border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s;
+    position: relative;
+    background: #161b22;
 }
-.action-option:hover {
-    background: #2d2d2d;
+.action-option:hover:not(.disabled) {
+    border-color: #444;
+    background: #1c2128;
 }
 .action-option.active {
-    border-color: #007bff;
-    background: rgba(0, 123, 255, 0.1);
+    border-color: #e36209;
+    background: rgba(227, 96, 33, 0.05);
 }
 .action-option.approve.active {
     border-color: #2ea043;
-    background: rgba(46, 160, 67, 0.1);
+    background: rgba(46, 160, 67, 0.05);
 }
 .action-option.request-changes.active {
     border-color: #f85149;
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(248, 81, 73, 0.05);
 }
-.action-option input {
-    margin-top: 4px;
+.action-option.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    filter: grayscale(1);
 }
+.action-icon-box {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+.action-icon-box.info { background: rgba(56, 139, 253, 0.1); }
+.action-icon-box.success { background: rgba(46, 160, 67, 0.1); }
+.action-icon-box.danger { background: rgba(248, 81, 73, 0.1); }
+
 .action-info strong {
     display: block;
     color: #fff;
+    font-size: 14px;
     margin-bottom: 2px;
 }
 .action-info span {
-    font-size: 0.8rem;
+    font-size: 12px;
     color: #8b949e;
 }
+.disabled-hint {
+    position: absolute;
+    right: 16px;
+    font-size: 11px;
+    color: #f85149;
+    font-style: italic;
+}
 .modal-footer {
+    padding: 20px 24px;
+    border-top: 1px solid #333;
     display: flex;
     justify-content: flex-end;
     gap: 12px;
-    margin-top: 24px;
+    background: #252526;
+}
+.submit-btn {
+    min-width: 160px;
 }
 
 .btn-review {
@@ -2427,150 +2760,9 @@ input:focus + .slider {
     justify-content: flex-end;
     gap: 12px;
 }
-</style>
-
-<style>
-/* Modal Styles */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  backdrop-filter: blur(4px);
-}
-
-.modal-content.review-modal {
-  background: #1e1e1e;
-  width: 500px;
-  padding: 24px;
-  border-radius: 12px;
-  border: 1px solid #333;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-}
-
-.review-modal h3 {
-  margin-top: 0;
-  margin-bottom: 24px;
-  font-size: 20px;
-  color: #fff;
-}
-
-.form-group {
-  margin-bottom: 24px;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #888;
-}
-
-.form-group textarea {
-  width: 100%;
-  min-height: 100px;
-  background: #252526;
-  border: 1px solid #333;
-  border-radius: 6px;
-  padding: 12px;
-  color: #eee;
-  resize: vertical;
-  font-family: inherit;
-  font-size: 14px;
-}
-
-.form-group textarea:focus {
-  outline: none;
-  border-color: #007acc;
-}
-
-.review-actions-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.action-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #252526;
-  border: 1px solid #333;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s;
-  position: relative;
-}
-
-.action-option:hover {
-  background: #2a2d2e;
-  border-color: #444;
-}
-
-.action-option.active {
-  background: #2d2d30;
-  border-color: #007acc;
-  box-shadow: 0 0 0 1px #007acc;
-}
-
-.action-option input[type="radio"] {
-  margin-top: 4px;
-  accent-color: #007acc;
-}
-
-.action-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.action-info strong {
-  font-size: 14px;
-  color: #fff;
-}
-
-.action-info span {
-  font-size: 12px;
-  color: #888;
-}
-
-.action-option.approve.active {
-  border-color: #4caf50;
-  box-shadow: 0 0 0 1px #4caf50;
-}
-
-.action-option.approve.active input[type="radio"] {
-  accent-color: #4caf50;
-}
-
-.action-option.request-changes.active {
-  border-color: #f44336;
-  box-shadow: 0 0 0 1px #f44336;
-}
-
-.action-option.request-changes.active input[type="radio"] {
-  accent-color: #f44336;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 32px;
-  padding-top: 20px;
-  border-top: 1px solid #333;
-}
 
 /* Gutter "+" button — unscoped so it applies inside the pierre DOM */
-.gutter-plus-btn {
+:global(.gutter-plus-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2586,7 +2778,7 @@ input:focus + .slider {
   cursor: pointer;
   padding: 0;
 }
-.gutter-plus-btn:hover {
+:global(.gutter-plus-btn:hover) {
   background: #2ea043;
 }
 
