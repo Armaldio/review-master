@@ -644,16 +644,21 @@ const sendBatchComments = async () => {
 
   try {
     for (const comment of store.batchedComments) {
-      await postComment(comment);
-    }
-    // Move sent comments to remote so they display as posted
-    for (const comment of store.batchedComments) {
-      store.remoteComments.push({
-        ...comment,
-        author: store.currentUser?.username || store.currentUser?.name || 'You',
-        avatar_url: store.currentUser?.avatar_url, // Ensure avatar is shown immediately
-        created_at: new Date().toISOString(),
-      });
+      if (comment.is_file_level) {
+        // Post file-level comment via active provider directly
+        const remote = await store.activeProvider!.postFileComment(comment.new_path, comment.body);
+        store.remoteComments.push(remote);
+      } else {
+        // Post line-level comment
+        const remote = await postComment(comment);
+        store.remoteComments.push({
+          ...comment,
+          ...remote,
+          author: store.currentUser?.username || store.currentUser?.name || 'You',
+          avatar_url: store.currentUser?.avatar_url,
+          created_at: new Date().toISOString(),
+        });
+      }
     }
     store.clearBatchedComments();
     annotationVersion.value++;
@@ -680,7 +685,25 @@ const submitReview = async () => {
     }
 };
 
-const postFileComment = async () => {
+const batchFileComment = () => {
+    if (!store.activeProvider || !store.selectedFile) return;
+    const body = fileCommentBody.value.trim();
+    if (!body) return;
+    
+    const commentData = {
+        id: Date.now().toString(),
+        body,
+        new_path: store.selectedFile,
+        is_file_level: true
+    };
+    
+    store.addBatchedComment(commentData);
+    fileCommentBody.value = '';
+    annotationVersion.value++;
+    store.addToast('File comment added to batch', 'info');
+};
+
+const sendNowFileComment = async () => {
     if (!store.activeProvider || !store.selectedFile) return;
     const body = fileCommentBody.value.trim();
     if (!body) return;
@@ -1047,17 +1070,27 @@ const createThreadElement = (comments: any[]): HTMLElement => {
   comments.forEach((comment, index) => {
     const commentEl = document.createElement('div');
     commentEl.className = 'comment-item';
-    if (comment.in_reply_to_id || (index > 0 && comment.discussion_id)) {
-        commentEl.classList.add('comment-reply');
-    }
-
+    
+    // Left side: Avatar and Timeline
+    const timelineLeft = document.createElement('div');
+    timelineLeft.className = 'timeline-left';
+    
     const avatar = document.createElement('img');
     avatar.className = 'comment-avatar';
     avatar.src = comment.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(comment.author)}&background=random`;
-    commentEl.appendChild(avatar);
+    timelineLeft.appendChild(avatar);
 
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'comment-content';
+    if (index < comments.length - 1 || true) { // Always show connector for now, CSS will hide the last one if needed
+        const connector = document.createElement('div');
+        connector.className = 'timeline-connector';
+        timelineLeft.appendChild(connector);
+    }
+    commentEl.appendChild(timelineLeft);
+
+    // Right side: Content
+    const timelineRight = document.createElement('div');
+    timelineRight.className = 'timeline-right';
+    
     const header = document.createElement('div');
     header.className = 'comment-header';
 
@@ -1070,8 +1103,18 @@ const createThreadElement = (comments: any[]): HTMLElement => {
     time.className = 'comment-time';
     time.textContent = new Date(comment.created_at).toLocaleString();
     header.appendChild(time);
-     if (!comment.is_batched) {
-        // Only show actions for non-batched comments (though we could support batch edit too)
+
+    if (comment.is_batched) {
+        const batchBadge = document.createElement('span');
+        batchBadge.className = 'comment-badge-batched';
+        batchBadge.textContent = 'PENDING';
+        header.appendChild(batchBadge);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'comment-actions';
+
+    if (!comment.is_batched) {
         const isAuthor = store.currentUser && (comment.author_id === store.currentUser.id || comment.author === store.currentUser.username);
 
         if (isAuthor) {
@@ -1079,9 +1122,8 @@ const createThreadElement = (comments: any[]): HTMLElement => {
             editBtn.className = 'comment-remove-btn';
             editBtn.innerHTML = PENCIL_ICON;
             editBtn.title = 'Edit comment';
-            editBtn.style.marginRight = '4px';
             editBtn.addEventListener('click', () => startEdit(comment));
-            header.appendChild(editBtn);
+            actions.appendChild(editBtn);
         }
 
         const deleteBtn = document.createElement('button');
@@ -1089,17 +1131,15 @@ const createThreadElement = (comments: any[]): HTMLElement => {
         deleteBtn.innerHTML = TRASH_ICON;
         deleteBtn.title = 'Delete comment';
         deleteBtn.addEventListener('click', () => deleteRemoteComment(comment));
-        header.appendChild(deleteBtn);
+        actions.appendChild(deleteBtn);
     }
-
-    contentWrapper.appendChild(header);
+    header.appendChild(actions);
+    timelineRight.appendChild(header);
 
     if (editingCommentId.value === comment.id) {
         const editContainer = document.createElement('div');
         editContainer.className = 'reply-input-wrapper';
         editContainer.style.marginTop = '4px';
-        editContainer.style.paddingTop = '4px';
-        editContainer.style.borderTop = 'none';
 
         const textarea = document.createElement('textarea');
         textarea.className = 'reply-textarea';
@@ -1109,12 +1149,12 @@ const createThreadElement = (comments: any[]): HTMLElement => {
         });
         editContainer.appendChild(textarea);
 
-        const actions = document.createElement('div');
-        actions.className = 'reply-actions';
-        actions.style.marginTop = '4px';
+        const editActions = document.createElement('div');
+        editActions.className = 'reply-actions';
+        editActions.style.marginTop = '4px';
 
         const leftActions = document.createElement('div');
-        actions.appendChild(leftActions); // Placeholder for emoji if needed
+        editActions.appendChild(leftActions);
 
         const rightActions = document.createElement('div');
         rightActions.style.display = 'flex';
@@ -1132,18 +1172,16 @@ const createThreadElement = (comments: any[]): HTMLElement => {
         cancelBtn.addEventListener('click', cancelEdit);
         rightActions.appendChild(cancelBtn);
 
-        actions.appendChild(rightActions);
-        editContainer.appendChild(actions);
-        contentWrapper.appendChild(editContainer);
+        editActions.appendChild(rightActions);
+        editContainer.appendChild(editActions);
+        timelineRight.appendChild(editContainer);
     } else {
         const body = document.createElement('div');
         body.className = 'comment-body markdown-body';
-        // Render markdown and sanitize
         const rawHtml = marked.parse(comment.body) as string;
         body.innerHTML = DOMPurify.sanitize(rawHtml);
-        contentWrapper.appendChild(body);
+        timelineRight.appendChild(body);
 
-        // Reactions bar
         const reactionRow = document.createElement('div');
         reactionRow.className = 'reaction-bar';
         (comment.reactions || []).forEach((r: any) => {
@@ -1165,7 +1203,6 @@ const createThreadElement = (comments: any[]): HTMLElement => {
                 addReaction(comment, emojiChar);
             });
             picker.style.position = 'absolute';
-            // Simple positioning logic
             const rect = addReactBtn.getBoundingClientRect();
             picker.style.top = `-100px`;
             picker.style.left = `0`;
@@ -1174,10 +1211,10 @@ const createThreadElement = (comments: any[]): HTMLElement => {
             if (popup) popup.style.display = 'grid';
         });
         reactionRow.appendChild(addReactBtn);
-        contentWrapper.appendChild(reactionRow);
+        timelineRight.appendChild(reactionRow);
     }
 
-    commentEl.appendChild(contentWrapper);
+    commentEl.appendChild(timelineRight);
     container.appendChild(commentEl);
   });
 
@@ -1448,98 +1485,19 @@ const lineAnnotations = computed(() => {
           <button class="btn-secondary" @click="openMRInBrowser" title="Open in browser">
             Open in Browser
           </button>
-          <div class="nav-cluster" v-if="store.selectedFile">
-            <button 
-              class="btn-nav" 
-              @click="goToPrevFile" 
-              title="Previous file"
-            >
-              ←
-            </button>
-            <button 
-              class="btn-nav" 
-              @click="goToNextFile" 
-              title="Next file"
-            >
-              →
-            </button>
-          </div>
         </div>
 
-        <div class="center-controls" v-if="store.selectedFile">
-          <div class="view-toggles">
-            <button
-              :class="{ active: viewMode === 'split' }"
-              @click="viewMode = 'split'"
-            >
-              Split
-            </button>
-            <button
-              :class="{ active: viewMode === 'unified' }"
-              @click="viewMode = 'unified'"
-            >
-              Unified
-            </button>
-            <button
-              :class="{ active: wordWrap }"
-              @click="wordWrap = !wordWrap"
-            >
-              Wrap Words
-            </button>
-          </div>
-          <div class="tab-switcher">
-            <button
-              :class="{ active: currentTab === 'diff' }"
-              @click="currentTab = 'diff'"
-            >
-              Diff
-            </button>
-            <button
-              :class="{ active: currentTab === 'semantic' }"
-              @click="currentTab = 'semantic'"
-            >
-              Semantic
-            </button>
-            <button
-              :class="{ active: currentTab === 'ast' }"
-              @click="currentTab = 'ast'"
-            >
-              AST
-            </button>
-          </div>
+        <div class="toolbar-title" v-if="store.mrData">
+          {{ store.mrData.title }}
         </div>
 
-        <div class="primary-actions" v-if="store.selectedFile">
-          <button 
-            class="btn-secondary" 
-            @click="refreshMR" 
-            :disabled="isRefreshing"
-            title="Refresh MR data"
-            style="margin-right: 8px; display: flex; align-items: center; gap: 4px;"
-          >
-            <span v-if="isRefreshing" class="spinner-small"></span>
-            {{ isRefreshing ? 'Refreshing...' : 'Refresh' }}
-          </button>
-          <button 
-            v-if="isAuthor && store.mrData?.draft" 
-            class="btn-secondary" 
-            @click="markAsReady" 
-            :disabled="isMarkingAsReady"
-            style="margin-right: 8px;"
-          >
-            {{ isMarkingAsReady ? 'Marking...' : 'Mark as Ready' }}
-          </button>
-          <button class="btn-primary" @click="markAsViewed" :disabled="isViewed" :class="{ 'viewed': isViewed }">
-            {{ isViewed ? 'Already Viewed' : 'Mark as Viewed' }}
-          </button>
-        </div>
-        <div class="primary-actions" v-else>
+        <div class="toolbar-right">
            <button 
             class="btn-secondary" 
             @click="refreshMR" 
             :disabled="isRefreshing"
             title="Refresh MR data"
-            style="margin-right: 8px; display: flex; align-items: center; gap: 4px;"
+            style="display: flex; align-items: center; gap: 4px;"
           >
             <span v-if="isRefreshing" class="spinner-small"></span>
             {{ isRefreshing ? 'Refreshing...' : 'Refresh' }}
@@ -1549,15 +1507,97 @@ const lineAnnotations = computed(() => {
 
       <div class="diff-area">
         <div class="file-header" v-if="file">
-            <div class="file-info">
-                <span class="file-name">{{ file.new_path }}</span>
-                <span class="file-stats">
-                    <span class="added">+{{ parsedFileDiff?.additions || 0 }}</span>
-                    <span class="deleted">-{{ parsedFileDiff?.deletions || 0 }}</span>
-                </span>
+            <div class="file-header-top">
+                <div class="file-info">
+                    <span class="file-name">{{ file.new_path }}</span>
+                    <span class="file-stats">
+                        <span class="added">+{{ parsedFileDiff?.additions || 0 }}</span>
+                        <span class="deleted">-{{ parsedFileDiff?.deletions || 0 }}</span>
+                    </span>
+                </div>
+                <div class="file-header-actions">
+                    <button 
+                        v-if="isAuthor && store.mrData?.draft" 
+                        class="btn-secondary btn-small" 
+                        @click="markAsReady" 
+                        :disabled="isMarkingAsReady"
+                    >
+                        {{ isMarkingAsReady ? 'Marking...' : 'Mark as Ready' }}
+                    </button>
+                    <button 
+                        class="btn-primary btn-small" 
+                        @click="markAsViewed" 
+                        :disabled="isViewed" 
+                        :class="{ 'viewed': isViewed }"
+                    >
+                        {{ isViewed ? 'Viewed' : 'Mark as Viewed' }}
+                    </button>
+                </div>
             </div>
-            <div class="file-actions">
-                <!-- File Comment is now persistent at the bottom -->
+
+            <div class="file-header-bottom">
+                <div class="tab-switcher switcher-small">
+                    <button
+                        :class="{ active: currentTab === 'diff' }"
+                        @click="currentTab = 'diff'"
+                    >
+                        Diff
+                    </button>
+                    <button
+                        :class="{ active: currentTab === 'semantic' }"
+                        @click="currentTab = 'semantic'"
+                    >
+                        Semantic
+                    </button>
+                    <button
+                        :class="{ active: currentTab === 'ast' }"
+                        @click="currentTab = 'ast'"
+                    >
+                        AST
+                    </button>
+                </div>
+
+                <div class="file-header-right-group">
+                    <div class="view-toggles toggles-small">
+                        <button
+                            :class="{ active: viewMode === 'split' }"
+                            @click="viewMode = 'split'"
+                        >
+                            Split
+                        </button>
+                        <button
+                            :class="{ active: viewMode === 'unified' }"
+                            @click="viewMode = 'unified'"
+                        >
+                            Unified
+                        </button>
+                        <button
+                            class="btn-wrap"
+                            :class="{ active: wordWrap }"
+                            @click="wordWrap = !wordWrap"
+                            title="Toggle Word Wrap"
+                        >
+                            Wrap
+                        </button>
+                    </div>
+
+                    <div class="nav-cluster">
+                        <button 
+                            class="btn-nav" 
+                            @click="goToPrevFile" 
+                            title="Previous file"
+                        >
+                            ←
+                        </button>
+                        <button 
+                            class="btn-nav" 
+                            @click="goToNextFile" 
+                            title="Next file"
+                        >
+                            →
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1577,7 +1617,7 @@ const lineAnnotations = computed(() => {
             :oldFile="store.fileContents[file.new_path]?.old ? getFileContentFromChange(store.fileContents[file.new_path]?.old, file.old_path || '/dev/null') : undefined"
             :newFile="store.fileContents[file.new_path]?.new ? getFileContentFromChange(store.fileContents[file.new_path]?.new, file.new_path || '/dev/null') : undefined"
           />
-          <div v-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
+          <div v-else-if="file && !file.diff" class="empty-state">No differences (e.g. binary file or only empty lines)</div>
           <div v-else-if="!file && store.mrData" class="overview-container">
             <div class="overview-content">
               <h1 class="overview-title">{{ store.mrData.title }}</h1>
@@ -1689,7 +1729,8 @@ const lineAnnotations = computed(() => {
             <h4>File Comment (Global for this file)</h4>
             <textarea v-model="fileCommentBody" placeholder="Add a comment for this entire file..."></textarea>
             <div class="editor-actions">
-                <button class="btn-primary" @click="postFileComment" :disabled="!fileCommentBody.trim() || isSubmitting">Post Comment</button>
+                <button class="btn-secondary" @click="batchFileComment" :disabled="!fileCommentBody.trim() || isSubmitting">Add to Batch</button>
+                <button class="btn-primary" @click="sendNowFileComment" :disabled="!fileCommentBody.trim() || isSubmitting">Send Now</button>
             </div>
         </div>
       </div>
@@ -1710,7 +1751,11 @@ const lineAnnotations = computed(() => {
                 <label class="section-label">Pending Comments ({{ store.batchedComments.length }})</label>
                 <div class="pending-comments-list">
                     <div v-for="c in store.batchedComments" :key="c.id" class="pending-comment-item">
-                        <div class="comment-loc">{{ c.new_path }} : L{{ c.new_line }}</div>
+                        <div class="comment-loc">
+                            <span class="file-path">{{ c.new_path }}</span>
+                            <span class="loc-val" v-if="c.is_file_level"> (Global)</span>
+                            <span class="loc-val" v-else> : L{{ c.new_line }}</span>
+                        </div>
                         <div class="comment-preview">{{ c.body }}</div>
                     </div>
                 </div>
@@ -2228,10 +2273,29 @@ input:focus + .slider {
   background: #252526;
   border-bottom: 1px solid #333;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   flex-shrink: 0;
   gap: 20px;
+  height: 48px;
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+.toolbar-title {
+  text-align: center;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 600px;
+  margin: 0 auto;
+  font-size: 15px;
+}
+.toolbar-right {
+  display: flex;
+  justify-content: flex-end;
 }
 .center-controls {
   display: flex;
@@ -2242,10 +2306,13 @@ input:focus + .slider {
   display: contents;
 }
 .primary-actions {
-  justify-self: end;
   display: flex;
   align-items: center;
   gap: 12px;
+}
+.btn-small {
+    padding: 4px 10px !important;
+    font-size: 12px !important;
 }
 .view-toggles button {
   background: #333;
@@ -2380,6 +2447,14 @@ input:focus + .slider {
 .tab-switcher button.active {
   background: #30363d;
   color: #fff;
+}
+.switcher-small button {
+    padding: 2px 8px;
+    font-size: 12px;
+}
+.toggles-small button {
+    padding: 2px 8px;
+    font-size: 12px;
 }
 
 .semantic-results {
@@ -2691,31 +2766,39 @@ input:focus + .slider {
 /* File Header & Actions */
 .file-header {
     display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 16px;
+    background: #252526;
+    border-bottom: 2px solid #333;
+    position: sticky;
+    top: 48px; /* Height of the main toolbar */
+    z-index: 100;
+}
+.file-header-top, .file-header-bottom {
+    display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background: #252526;
-    border-bottom: 1px solid #333;
-    position: sticky;
-    top: 0;
-    z-index: 10;
+    width: 100%;
+}
+.file-header-actions, .file-header-right-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 .file-name {
     font-weight: 600;
     color: #c9d1d9;
+    font-size: 14px;
 }
 .file-stats {
     margin-left: 12px;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-family: monospace;
 }
 .file-stats .added { color: #2ea043; }
 .file-stats .deleted { color: #f85149; margin-left: 4px; }
 
-.file-actions {
-    display: flex;
-    gap: 8px;
-}
 .btn-icon {
     display: flex;
     align-items: center;
@@ -2730,6 +2813,11 @@ input:focus + .slider {
 }
 .btn-icon:hover {
     background: #444;
+}
+.btn-wrap {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
 }
 
 .file-comment-editor {
@@ -2860,156 +2948,200 @@ input:focus + .slider {
   color: #c9d1d9;
 }
 
+
 /* Comment Threading & Styling */
-.comment-thread-container {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px 12px;
-  background: #1e1e1e;
-  border-left: 3px solid #007acc;
-  margin: 8px 0;
-  border-radius: 4px;
+:global(.comment-thread-container) {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  padding: 16px !important;
+  background: #1e1e1e !important;
+  border-left: 3px solid #007acc !important;
+  margin: 12px 0 !important;
+  border-radius: 6px !important;
+  white-space: normal !important; /* Critical: reset from diff view */
+  line-height: 1.4 !important;
 }
-.comment-thread-container.resolved {
-  border-left-color: #4caf50;
-  opacity: 0.8;
+:global(.comment-thread-container.resolved) {
+  border-left-color: #4caf50 !important;
+  opacity: 0.8 !important;
 }
-.comment-thread-container.collapsed {
-  opacity: 0.6;
+:global(.comment-thread-container.collapsed) {
+  opacity: 0.6 !important;
 }
-.thread-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.03);
-  font-size: 0.75rem;
-  border-radius: 4px 4px 0 0 ;
+:global(.thread-header) {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding-bottom: 8px !important;
+  margin-bottom: 8px !important;
+  border-bottom: 1px solid #333 !important;
+  font-size: 12px !important;
 }
-.comment-thread-container.collapsed .thread-header {
-  border-radius: 4px;
+:global(.comment-thread-container.collapsed .thread-header) {
+  margin-bottom: 0 !important;
+  border-bottom: none !important;
 }
-.thread-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+:global(.thread-info) {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
 }
-.resolved-badge {
-  color: #4caf50;
-  font-weight: bold;
+:global(.resolved-badge) {
+  background: rgba(76, 175, 80, 0.1) !important;
+  color: #4caf50 !important;
+  padding: 2px 8px !important;
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  font-size: 11px !important;
 }
-.thread-summary {
-  color: #888;
-  font-style: italic;
+:global(.thread-summary) {
+  color: #888 !important;
+  font-style: italic !important;
 }
-.thread-btn {
-  background: transparent;
-  border: none;
-  color: #007acc;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+:global(.thread-btn) {
+  background: transparent !important;
+  border: 1px solid #333 !important;
+  color: #ccc !important;
+  cursor: pointer !important;
+  padding: 4px 10px !important;
+  border-radius: 4px !important;
+  font-size: 12px !important;
 }
-.thread-btn:hover {
-  background: rgba(0, 122, 204, 0.1);
+:global(.thread-btn:hover) {
+  background: #333 !important;
+  color: #fff !important;
 }
-.thread-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+:global(.thread-btn:disabled) {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
 }
-.comment-item {
-  display: flex;
-  padding: 8px;
-  gap: 12px;
+
+:global(.comment-item) {
+  display: flex !important;
+  gap: 12px !important;
 }
-.comment-item:not(:last-child) {
-  border-bottom: 1px solid #30363d;
+:global(.timeline-left) {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  width: 28px !important;
+  flex-shrink: 0 !important;
 }
-.comment-reply {
-  margin-left: 24px;
-  border-left: 2px solid #30363d;
-  padding-left: 12px;
+:global(.timeline-connector) {
+  width: 2px !important;
+  flex: 1 !important;
+  background: #30363d !important;
+  margin: 4px 0 !important;
 }
-.comment-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #30363d;
-  flex-shrink: 0;
+:global(.comment-item:last-of-type .timeline-connector) {
+    display: none !important;
 }
-.comment-content {
-  flex: 1;
-  min-width: 0;
+:global(.timeline-right) {
+  flex: 1 !important;
+  min-width: 0 !important;
+  padding-bottom: 12px !important;
 }
-.comment-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
+:global(.comment-avatar) {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 50% !important;
+  background: #30363d !important;
+  flex-shrink: 0 !important;
+  border: 1px solid #333 !important;
 }
-.comment-author {
-  font-weight: 600;
-  color: #c9d1d9;
-  font-size: 0.85rem;
+:global(.comment-header) {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-bottom: 4px !important;
 }
-.comment-time {
-  font-size: 0.75rem;
-  color: #8b949e;
+:global(.comment-author) {
+  font-weight: 600 !important;
+  color: #c9d1d9 !important;
+  font-size: 13px !important;
 }
-.comment-badge-batched {
-  font-size: 0.65rem;
-  background: #b67501;
-  color: #fff;
-  padding: 1px 4px;
-  border-radius: 4px;
-  font-weight: bold;
+:global(.comment-time) {
+  font-size: 11px !important;
+  color: #8b949e !important;
 }
-.comment-remove-btn {
-  background: none;
-  border: none;
-  color: #8b949e;
-  cursor: pointer;
-  font-size: 0.8rem;
-  padding: 0 4px;
+:global(.comment-actions) {
+    margin-left: auto !important;
+    display: flex !important;
+    gap: 4px !important;
 }
-.comment-remove-btn svg {
-  vertical-align: middle;
+:global(.comment-badge-batched) {
+  font-size: 10px !important;
+  background: #b67501 !important;
+  color: #fff !important;
+  padding: 1px 6px !important;
+  border-radius: 4px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
 }
-.comment-remove-btn:hover {
-  color: #f85149;
+:global(.comment-remove-btn) {
+  background: none !important;
+  border: none !important;
+  color: #8b949e !important;
+  cursor: pointer !important;
+  font-size: 12px !important;
+  padding: 4px !important;
+  border-radius: 4px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+:global(.comment-remove-btn:hover) {
+  background: #333 !important;
+  color: #f85149 !important;
+}
+:global(.comment-body) {
+    margin-top: 4px !important;
+}
+:global(.comment-body.markdown-body) {
+    font-size: 14px !important;
+    line-height: 1.5 !important;
+    color: #e6edf3 !important;
+}
+:global(.comment-body.markdown-body p) {
+    margin-bottom: 8px !important;
+}
+:global(.comment-body.markdown-body p:last-child) {
+    margin-bottom: 0 !important;
 }
 
 /* Reply Input Styling */
-.reply-input-wrapper {
-  margin-top: 8px;
-  padding-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+:global(.reply-input-wrapper) {
+  margin-top: 8px !important;
+  padding: 12px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  background: rgba(255,255,255,0.02) !important;
+  border-radius: 6px !important;
 }
-.reply-textarea {
-  width: 100%;
-  background: #0d1117;
-  color: #e6edf3;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 8px;
-  font-family: inherit;
-  font-size: 0.85rem;
-  resize: none;
-  overflow: hidden;
-  min-height: 36px;
-  box-sizing: border-box;
+:global(.reply-textarea) {
+  width: 100% !important;
+  background: #0d1117 !important;
+  color: #e6edf3 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 6px !important;
+  padding: 8px !important;
+  font-family: inherit !important;
+  font-size: 14px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  min-height: 36px !important;
+  box-sizing: border-box !important;
 }
-.reply-textarea:focus {
-  outline: none;
-  border-color: #58a6ff;
+:global(.reply-textarea:focus) {
+  outline: none !important;
+  border-color: #58a6ff !important;
 }
-.reply-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+:global(.reply-actions) {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
 }
 
 /* Emoji Picker & Reactions */
