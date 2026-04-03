@@ -11,6 +11,7 @@ declare interface Window {
     checkStorage: () => Promise<{ success: boolean; message: string }>;
     runSem: (payload: any) => Promise<{ success: boolean; data?: any; error?: string; raw?: string; input?: string }>;
     runDifftastic: (payload: any) => Promise<{ success: boolean; data?: any; error?: string; raw?: string }>;
+    runInspect: (payload: { platform: string; prNumber: number; ownerRepo: string; token?: string }) => Promise<{ success: boolean; data?: any; error?: string; raw?: string }>;
     checkBinaries: () => Promise<{ sem: boolean; difft: boolean; inspect: boolean }>;
     openExternal: (url: string) => Promise<void>;
     parseCodeowners: (content: string) => Promise<Array<{ pattern: string; owners: string[] }>>;

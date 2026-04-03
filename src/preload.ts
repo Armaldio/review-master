@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   runSem: (payload: any) => ipcRenderer.invoke('run-sem', payload),
   runDifftastic: (payload: any) => ipcRenderer.invoke('run-difftastic', payload),
+  runInspect: (payload: { platform: string; prNumber: number; ownerRepo: string; token?: string }) => ipcRenderer.invoke('run-inspect', payload),
   checkBinaries: () => ipcRenderer.invoke('check-binaries'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   parseCodeowners: (content: string) => ipcRenderer.invoke('parse-codeowners', content),

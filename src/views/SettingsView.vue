@@ -42,6 +42,24 @@ const removeAccount = async (id: string) => {
     await store.removeAccount(id);
   }
 };
+
+const binStatus = ref({ sem: false, difft: false, inspect: false });
+const checkingBins = ref(false);
+
+const checkBins = async () => {
+  checkingBins.value = true;
+  try {
+    binStatus.value = await window.electronAPI.checkBinaries();
+  } catch (e) {
+    console.error('Failed to check binaries:', e);
+  } finally {
+    checkingBins.value = false;
+  }
+};
+
+onMounted(() => {
+    checkBins();
+});
 </script>
 
 <template>
@@ -110,6 +128,45 @@ const removeAccount = async (id: string) => {
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6"/></svg>
         </button>
       </div>
+    </div>
+
+    <div class="tooling-status card">
+      <div class="card-header">
+        <h3>Tooling Status</h3>
+        <button class="refresh-btn" @click="checkBins" :disabled="checkingBins" title="Refresh status">
+            <svg :class="{ spinning: checkingBins }" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </div>
+      <div class="tool-list">
+        <div class="tool-item">
+          <div class="tool-info">
+            <span class="tool-name">Semantic Diff</span>
+            <span class="tool-bin">sem</span>
+          </div>
+          <span :class="['status-badge', binStatus.sem ? 'installed' : 'missing']">
+            {{ binStatus.sem ? 'Installed' : 'Missing' }}
+          </span>
+        </div>
+        <div class="tool-item">
+          <div class="tool-info">
+            <span class="tool-name">AST Diff</span>
+            <span class="tool-bin">difftastic</span>
+          </div>
+          <span :class="['status-badge', binStatus.difft ? 'installed' : 'missing']">
+            {{ binStatus.difft ? 'Installed' : 'Missing' }}
+          </span>
+        </div>
+        <div class="tool-item">
+          <div class="tool-info">
+            <span class="tool-name">Semantic Triage</span>
+            <span class="tool-bin">inspect</span>
+          </div>
+          <span :class="['status-badge', binStatus.inspect ? 'installed' : 'missing']">
+            {{ binStatus.inspect ? 'Installed' : 'Missing' }}
+          </span>
+        </div>
+      </div>
+      <p class="tool-hint">Tools are automatically downloaded into your user data directory on startup.</p>
     </div>
 
     <div class="footer-actions" v-if="store.accounts.length > 0">
@@ -293,6 +350,106 @@ input:focus {
 
 button.secondary { background: #333; color: white; }
 button.secondary:hover { background: #444; }
+
+.tooling-status {
+  padding: 1.5rem;
+}
+
+.tooling-status .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.tooling-status h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #eee;
+}
+
+.refresh-btn {
+  background: transparent;
+  padding: 6px;
+  color: #888;
+  border-radius: 4px;
+}
+
+.refresh-btn:hover {
+  background: rgba(255,255,255,0.05);
+  color: white;
+}
+
+.tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.tool-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #161b22;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+.tool-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.tool-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #eee;
+}
+
+.tool-bin {
+  font-size: 0.7rem;
+  color: #888;
+  font-family: monospace;
+}
+
+.status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.installed {
+  background: rgba(35, 134, 54, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.status-badge.missing {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.tool-hint {
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 1.25rem;
+  margin-bottom: 0;
+  font-style: italic;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 button {
   padding: 0.7rem 1.2rem;

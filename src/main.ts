@@ -140,6 +140,7 @@ app.on('ready', () => {
   const BIN_DIR = path.join(app.getPath('userData'), 'bin');
   const SEM_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'sem.exe' : 'sem');
   const DIFFT_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'difft.exe' : 'difft');
+  const INSPECT_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'inspect.exe' : 'inspect');
 
   async function downloadFile(url: string, dest: string) {
     return new Promise((resolve, reject) => {
@@ -180,7 +181,7 @@ app.on('ready', () => {
         }
 
         const extension = platform === 'windows' ? 'zip' : 'tar.gz';
-        const url = `https://github.com/Ataraxy-Labs/sem/releases/download/v0.3.10/sem-${platform}-${arch}.${extension}`;
+        const url = `https://github.com/Ataraxy-Labs/sem/releases/download/v0.3.12/sem-${platform}-${arch}.${extension}`;
         const archivePath = path.join(BIN_DIR, `sem-download.${extension}`);
 
         await downloadFile(url, archivePath);
@@ -227,6 +228,32 @@ app.on('ready', () => {
         console.log('[Binaries] difft installed successfully.');
       } else {
         console.log('[Binaries] difft is already installed.');
+      }
+
+      // Inspect
+      const inspectStats = await fs.stat(INSPECT_PATH).catch(() => null);
+      if (!inspectStats) {
+        console.log('[Binaries] inspect not found, downloading...');
+        const platformMap: Record<string, string> = { 'linux': 'linux', 'darwin': 'macos', 'win32': 'windows' };
+        const archMap: Record<string, string> = { 'x64': 'x86_64', 'arm64': 'aarch64' };
+        
+        const platform = platformMap[process.platform];
+        const arch = archMap[process.arch];
+        
+        if (platform && arch) {
+            const extension = platform === 'windows' ? '.exe' : '';
+            // URLs like: https://github.com/Ataraxy-Labs/inspect/releases/download/v0.1.1/inspect-linux-x86_64
+            // and https://github.com/Ataraxy-Labs/inspect/releases/download/v0.1.1/inspect-windows-x86_64.exe
+            const url = `https://github.com/Ataraxy-Labs/inspect/releases/download/v0.1.1/inspect-${platform}-${arch}${extension}`;
+            
+            await downloadFile(url, INSPECT_PATH);
+            if (platform !== 'windows') {
+                await fs.chmod(INSPECT_PATH, 0o755);
+            }
+            console.log('[Binaries] inspect installed successfully.');
+        }
+      } else {
+        console.log('[Binaries] inspect is already installed.');
       }
     } catch (error) {
       console.error('[Binaries] Failed to initialize binaries:', error);
@@ -308,10 +335,47 @@ app.on('ready', () => {
     });
   });
 
+  ipcMain.handle('run-inspect', async (event, payload: { platform: string; prNumber: number; ownerRepo: string; token?: string }) => {
+    return new Promise((resolve) => {
+      if (payload.platform !== 'github') {
+        return resolve({ success: false, error: 'Remote triage is currently only supported for GitHub. For GitLab, we are waiting for official support.' });
+      }
+
+      console.log(`[IPC:run-inspect] Running remote triage for: ${payload.ownerRepo} PR #${payload.prNumber}`);
+      
+      const env = { ...process.env };
+      if (payload.token) {
+        env.GITHUB_TOKEN = payload.token;
+      }
+
+      const args = ['pr', payload.prNumber.toString(), '--remote', payload.ownerRepo, '--format', 'json'];
+      const child = spawn(INSPECT_PATH, args, { env });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => stdout += data);
+      child.stderr.on('data', (data) => stderr += data);
+      
+      child.on('close', (code) => {
+        if (code === 0) {
+          try {
+            resolve({ success: true, data: JSON.parse(stdout) });
+          } catch (e) {
+            resolve({ success: false, error: 'Failed to parse inspect output', raw: stdout });
+          }
+        } else {
+          resolve({ success: false, error: stderr || `Process exited with code ${code}` });
+        }
+      });
+    });
+  });
+
   ipcMain.handle('check-binaries', async () => {
     const semExists = await fs.stat(SEM_PATH).then(() => true).catch(() => false);
     const difftExists = await fs.stat(DIFFT_PATH).then(() => true).catch(() => false);
-    return { sem: semExists, difft: difftExists, inspect: false };
+    const inspectExists = await fs.stat(INSPECT_PATH).then(() => true).catch(() => false);
+    return { sem: semExists, difft: difftExists, inspect: inspectExists };
   });
 
   ipcMain.handle('open-external', async (event, url: string) => {

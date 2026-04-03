@@ -267,6 +267,8 @@ export const useReviewStore = defineStore('review', () => {
   const fileContents = ref<Record<string, { old: string; new: string }>>({});
   const isSemanticLoading = ref(false);
   const isAstLoading = ref(false);
+  const inspectResults = ref<any>(null);
+  const isInspectLoading = ref(false);
   const fileExpansionStates = ref<Record<string, Map<number, any>>>({});
 
   const updateExpansionState = (filePath: string, hunkMap: Map<number, any>) => {
@@ -407,6 +409,42 @@ export const useReviewStore = defineStore('review', () => {
       console.error('[Store] AST diff failed:', e);
     } finally {
       isAstLoading.value = false;
+    }
+  };
+
+  const fetchInspectTriage = async () => {
+    if (!activeProvider.value || !mrData.value) return;
+    
+    // Only GitHub is supported for now
+    if (platform.value !== 'github') {
+      return;
+    }
+
+    isInspectLoading.value = true;
+    try {
+      const parsed = parseUrl(mrUrl.value);
+      const account = accounts.value.find(acc => acc.platform === platform.value);
+      const token = account ? localStorage.getItem(account.tokenKey) : undefined;
+
+      const payload = {
+        platform: platform.value,
+        prNumber: parseInt(parsed.number),
+        ownerRepo: parsed.projectPath,
+        token: token || undefined
+      };
+
+      const res = await window.electronAPI.runInspect(payload);
+      if (res.success && res.data) {
+        console.log(`[Store] Inspect triage result:`, res.data);
+        inspectResults.value = res.data;
+      } else {
+        console.error('[Store] Inspect triage failed:', res.error);
+        addToast(`Inspect triage failed: ${res.error}`, 'error');
+      }
+    } catch (e) {
+      console.error('[Store] Inspect triage failed:', e);
+    } finally {
+      isInspectLoading.value = false;
     }
   };
 
@@ -611,6 +649,9 @@ export const useReviewStore = defineStore('review', () => {
     fetchFileContents,
     fetchSemanticDiff,
     fetchAstDiff,
+    inspectResults,
+    isInspectLoading,
+    fetchInspectTriage,
     batchedComments,
     currentUser,
     platform,

@@ -24,7 +24,7 @@ const showAllFiles = ref(false);
 const showOnlyMyFiles = ref(false);
 const wordWrap = ref(true);
 const useTreeView = ref(true);
-const currentTab = ref<"diff" | "semantic" | "ast">("diff");
+const currentTab = ref<"diff" | "semantic" | "ast" | "inspect">("diff");
 const isSubmitting = ref(false);
 const isMarkingAsReady = ref(false);
 const isRefreshing = ref(false);
@@ -156,6 +156,12 @@ const isViewed = computed(() => {
 });
 
 // --- Emoji Mapping ---
+const getRiskClass = (score: number) => {
+  if (score < 30) return 'risk-low';
+  if (score < 70) return 'risk-medium';
+  return 'risk-high';
+};
+
 const EMOJI_MAP = {
   'plus_one': '👍',
   'thumbsup': '👍',
@@ -780,6 +786,12 @@ const handleVisibilityChange = () => {
 
 onMounted(() => {
     store.startPolling();
+    
+    // Auto-fetch inspect triage for GitHub PRs
+    if (store.platform === 'github') {
+        store.fetchInspectTriage();
+    }
+
     window.addEventListener('focus', handleFocus);
     window.addEventListener('blur', handleBlur);
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -1555,6 +1567,13 @@ const lineAnnotations = computed(() => {
                     >
                         AST
                     </button>
+                    <button
+                        v-if="store.platform === 'github'"
+                        :class="{ active: currentTab === 'inspect' }"
+                        @click="currentTab = 'inspect'"
+                    >
+                        Inspect
+                    </button>
                 </div>
 
                 <div class="file-header-right-group">
@@ -1696,6 +1715,55 @@ const lineAnnotations = computed(() => {
           </div>
           <div v-else-if="file" class="empty-state">Click "Semantic" to analyze this file</div>
           <div v-else class="empty-state">Select a file to review</div>
+        </template>
+        <template v-else-if="currentTab === 'inspect'">
+          <div v-if="store.isInspectLoading" class="loading-state">
+            <div class="spinner"></div>
+            Running inspect triage...
+          </div>
+          <div v-else-if="store.inspectResults" class="inspect-results">
+            <!-- Summary Header -->
+            <div class="inspect-header-card" v-if="store.inspectResults.risk_score !== undefined">
+              <div class="risk-meter">
+                <div class="risk-label">Overall Risk Score</div>
+                <div class="risk-value" :class="getRiskClass(store.inspectResults.risk_score)">
+                  {{ store.inspectResults.risk_score }}
+                </div>
+              </div>
+              <div class="inspect-summary-text" v-if="store.inspectResults.summary">
+                {{ store.inspectResults.summary }}
+              </div>
+            </div>
+
+            <!-- Entities/Changes List -->
+            <div class="inspect-entities" v-if="store.inspectResults.changes || store.inspectResults.entities">
+              <h3>Triage Insights</h3>
+              <div v-for="item in (store.inspectResults.changes || store.inspectResults.entities)" :key="item.entityId || item.name" class="inspect-item card">
+                <div class="inspect-item-header">
+                  <span class="entity-name">{{ item.entityName || item.name }}</span>
+                  <span v-if="item.risk_score" :class="['risk-badge', getRiskClass(item.risk_score)]">
+                    Risk: {{ item.risk_score }}
+                  </span>
+                </div>
+                <div class="inspect-item-body">
+                  <div class="inspect-reason" v-if="item.reason || item.description">{{ item.reason || item.description }}</div>
+                  <div class="inspect-impact" v-if="item.impact">
+                    <strong>Impact:</strong> {{ item.impact }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Fallback for generic JSON if structure is unknown -->
+            <div v-if="!store.inspectResults.changes && !store.inspectResults.entities && !store.inspectResults.risk_score" class="raw-inspect">
+              <h3>Inspect Output</h3>
+              <pre>{{ JSON.stringify(store.inspectResults, null, 2) }}</pre>
+            </div>
+          </div>
+          <div v-else class="empty-state">
+            <button class="btn-primary" @click="store.fetchInspectTriage">Run Inspect Triage</button>
+            <p class="hint">Perform automated entity-level triage for this PR.</p>
+          </div>
         </template>
         <template v-else-if="currentTab === 'ast'">
           <div v-if="store.isAstLoading" class="loading-state">
@@ -2435,6 +2503,112 @@ input:focus + .slider {
   border-radius: 6px;
   padding: 2px;
 }
+
+/* --- Inspect Tab Styles --- */
+.inspect-results {
+  padding: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.inspect-header-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.risk-meter {
+  text-align: center;
+  padding-right: 2rem;
+  border-right: 1px solid #30363d;
+}
+
+.risk-label {
+  font-size: 0.8rem;
+  color: #8b949e;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.risk-value {
+  font-size: 3rem;
+  font-weight: 800;
+}
+
+.risk-low { color: #3fb950; }
+.risk-medium { color: #d29922; }
+.risk-high { color: #f85149; }
+
+.inspect-summary-text {
+  flex: 1;
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: #c9d1d9;
+}
+
+.inspect-entities h3 {
+  font-size: 1.2rem;
+  margin-bottom: 1rem;
+  color: #f0f6fc;
+}
+
+.inspect-item {
+  margin-bottom: 1rem;
+  background: #0d1117;
+}
+
+.inspect-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.inspect-item-header .entity-name {
+  font-weight: 600;
+  font-size: 1rem;
+  color: #58a6ff;
+}
+
+.risk-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: bold;
+  border: 1px solid currentColor;
+}
+
+.inspect-item-body {
+  font-size: 0.9rem;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+.inspect-reason {
+  margin-bottom: 0.5rem;
+}
+
+.inspect-impact {
+  font-size: 0.85rem;
+  padding: 0.5rem;
+  background: rgba(88, 166, 255, 0.05);
+  border-radius: 4px;
+}
+
+.raw-inspect pre {
+  background: #0d1117;
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  overflow: auto;
+}
+
 .tab-switcher button {
   background: transparent;
   border: none;
