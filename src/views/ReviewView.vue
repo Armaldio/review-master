@@ -680,10 +680,19 @@ const submitReview = async () => {
     if (!store.activeProvider) return;
     isSubmitting.value = true;
     try {
-        await store.activeProvider.submitReview(reviewComment.value, reviewAction.value);
+        // Create a copy of the comments to send
+        const commentsToSend = [...store.batchedComments];
+        
+        // Submit the overall review along with the batched comments
+        await store.activeProvider.submitReview(reviewComment.value, reviewAction.value, commentsToSend);
+        
         store.addToast(`Review submitted as ${reviewAction.value}!`, "success");
+        
+        // Success! Clear the local batch and the modal state
+        store.clearBatchedComments();
         showReviewModal.value = false;
         reviewComment.value = '';
+        annotationVersion.value++; // Force re-render to show new comments
     } catch (err) {
         store.addToast(`Review failed: ${(err as Error).message}`, "error");
     } finally {

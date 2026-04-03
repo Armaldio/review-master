@@ -340,10 +340,27 @@ export class GitHubProvider extends BaseProvider {
     };
   }
 
-  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void> {
+  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment', comments: any[] = []): Promise<void> {
     const pat = await this.getPat();
     const event = action === 'approve' ? 'APPROVE' : action === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT';
     
+    // Separate line comments from file-level comments as GitHub's reviews API
+    // primarily handles line-based comments in the atomic bundle.
+    const lineComments = comments.filter(c => !c.is_file_level).map(c => ({
+      path: c.new_path,
+      line: c.new_line,
+      body: c.body,
+      side: 'RIGHT'
+    }));
+
+    const fileComments = comments.filter(c => c.is_file_level);
+
+    // 1. Post file-level comments separately if any
+    for (const fc of fileComments) {
+      await this.postFileComment(fc.new_path, fc.body);
+    }
+
+    // 2. Submit the review with line comments
     const res = await fetch(`https://api.github.com/repos/${this.mrData!.owner}/${this.mrData!.repo}/pulls/${this.mrData!.number}/reviews`, {
       method: 'POST',
       headers: { 
@@ -353,7 +370,8 @@ export class GitHubProvider extends BaseProvider {
       },
       body: JSON.stringify({
         body: comment,
-        event
+        event,
+        comments: lineComments.length > 0 ? lineComments : undefined
       })
     });
     if (!res.ok) throw new Error(`Review submission failed: ${res.statusText}`);

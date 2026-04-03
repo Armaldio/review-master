@@ -432,13 +432,22 @@ export class GitLabProvider extends BaseProvider {
     };
   }
 
-  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void> {
+  public async submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment', comments: any[] = []): Promise<void> {
     const pat = await this.getPat();
     const projectPath = this.mrData!.encodedProjectPath;
     const iid = this.mrData!.number;
     const host = this.mrData!.host;
 
-    // 1. Post comment if provided
+    // 1. Post all pending comments from the batch
+    for (const c of comments) {
+      if (c.is_file_level) {
+        await this.postFileComment(c.new_path, c.body);
+      } else {
+        await this.postComment(c);
+      }
+    }
+
+    // 2. Post the top-level review comment if provided
     if (comment.trim()) {
       const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/notes`, {
         method: 'POST',
@@ -448,7 +457,7 @@ export class GitLabProvider extends BaseProvider {
       if (!res.ok) throw new Error(`Failed to post review comment: ${res.statusText}`);
     }
 
-    // 2. Handle approval/unapproval
+    // 3. Handle approval/unapproval
     if (action === 'approve') {
       const res = await fetch(`${host}/api/v4/projects/${projectPath}/merge_requests/${iid}/approve`, {
         method: 'POST',

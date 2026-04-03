@@ -66,7 +66,7 @@ export abstract class BaseProvider {
 
   public abstract postFileComment(path: string, body: string): Promise<Comment>;
   
-  public abstract submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment'): Promise<void>;
+  public abstract submitReview(comment: string, action: 'approve' | 'request_changes' | 'comment', comments?: any[]): Promise<void>;
 
   public abstract markAsReady(): Promise<void>;
   
