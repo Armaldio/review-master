@@ -1,0 +1,11 @@
+.review-layout.preview-visible { grid-template-columns: 260px minmax(340px, 1fr) minmax(320px, var(--preview-width, 420px)); }
+.preview-resize { position: absolute; z-index: 2; left: -4px; top: 0; bottom: 0; width: 8px; padding: 0; background: transparent; cursor: col-resize; touch-action: none; }
+.preview-resize:focus-visible { background: var(--accent-soft); }
+:root[data-theme="light"] { color-scheme: light; --paper:#f5f6f8; --surface:#fff; --ink:#17202b; --muted:#738091; --line:#e2e7ed; --accent:#7658cf; --accent-soft:#eee9fb; --good:#20826d; --bad:#c34e59; }
+:root[data-theme="dark"] { color-scheme: dark; --paper:#14171c; --surface:#1b2027; --ink:#e8edf4; --muted:#919daf; --line:#303843; --accent:#a38be9; --accent-soft:#2c2441; --good:#4bb297; --bad:#ef777c; }
+:root[data-theme="dark"] .file-sidebar { background:#171b21; }
+:root[data-theme="dark"] .file-row:hover, :root[data-theme="dark"] .quiet:hover, :root[data-theme="dark"] .icon-button:hover { background:#252b34; }
+:root[data-theme="dark"] .description, :root[data-theme="dark"] .sidebar-controls input, :root[data-theme="dark"] .comment-form textarea, :root[data-theme="dark"] .modal textarea, :root[data-theme="dark"] .note, :root[data-theme="dark"] .preview-frame, :root[data-theme="dark"] .modal { background:#1b2027; }
+:root[data-theme="dark"] .filter-toggle, :root[data-theme="dark"] .file-path, :root[data-theme="dark"] .discussion summary { color:#abb5c3; }
+:root[data-theme="dark"] .diff-warning, :root[data-theme="dark"] .owner-warning { background:#43371e; color:#ead195; }
+@media (max-width: 1000px) { .review-layout.preview-visible { grid-template-columns:220px minmax(0, 1fr); } .preview-pane { width:min(var(--preview-width, 420px), 90vw); } }
