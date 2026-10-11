@@ -26,16 +26,16 @@
     "node": ">=20.19.0"
   },
   "dependencies": {
-    "@pierre/diffs": "^1.1.3",
+    "@pierre/diffs": "^1.5.2",
     "dompurify": "^3.4.16",
     "marked": "^17.0.5",
-    "nuxt": "^4.6.1",
     "open": "^10.2.0"
   },
   "devDependencies": {
     "@nuxt/eslint": "^1.10.0",
     "@types/node": "^24.0.0",
     "eslint": "^10.12.0",
+    "nuxt": "^4.6.1",
     "playwright-core": "^1.64.0",
     "typescript": "^5.9.3",
     "vue-tsc": "^3.2.6"
