@@ -29,6 +29,11 @@ const comment = ref('');
 const inlinePosition = ref<Record<string, any> | null>(null);
 const commentDraft = ref(true);
 const commentBusy = ref(false);
+const draftNotesBusy = ref(false);
+const replyBusy = ref(false);
+const mrActionBusy = ref(false);
+const editingDraftNote = ref('');
+const draftNoteText = ref('');
 const summaryOpen = ref(false);
 const summary = ref('');
 const summaryIntent = ref<'summary' | 'changes'>('summary');
@@ -82,6 +87,7 @@ const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFi
 const reviewedCount = computed(() => app.files.value.filter(file => app.reviewed.value[fileName(file)] === file.identity && file.identity).length);
 const progress = computed(() => app.files.value.length ? Math.round(reviewedCount.value * 100 / app.files.value.length) : 0);
 const discussionList = computed(() => app.review.value?.discussions || []);
+const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
@@ -112,10 +118,16 @@ function renderMarkdown(source: string) {
 
 function setFile(file: any) {
   app.selectedPath.value = fileName(file);
-  const key = `${fileName(file)}:${file.identity || 'unknown'}`;
+  const key = `comment:${fileName(file)}`;
   comment.value = app.drafts.value[key] || '';
-  if (file.identity && app.reviewed.value[fileName(file)] !== file.identity) app.markReviewed(file);
   if (!continuous.value) document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
+}
+function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
+function toggleReviewed() {
+  if (!activeFile.value?.identity) return;
+  const mark = !isReviewed(activeFile.value);
+  app.setReviewed(activeFile.value, mark);
+  if (mark && app.autoAdvance.value) navigate(1);
 }
 function navigate(delta: number) {
   const rows = displayedFiles.value;
@@ -123,16 +135,17 @@ function navigate(delta: number) {
   const index = rows.findIndex((file: any) => fileName(file) === app.selectedPath.value);
   for (let step = 1; step <= rows.length; step++) {
     const target = rows[(index + delta * step + rows.length) % rows.length];
-    if (target && delta > 0 && app.reviewed.value[fileName(target)] !== target.identity) return setFile(target);
+    if (target && delta > 0 && !isReviewed(target)) return setFile(target);
   }
+  if (delta > 0) return;
   setFile(rows[(index + delta + rows.length) % rows.length]);
 }
 function saveDraft() {
   if (!activeFile.value) return;
-  app.setDraft(`${fileName(activeFile.value)}:${activeFile.value.identity || 'unknown'}`, comment.value);
+  app.setDraft(`comment:${fileName(activeFile.value)}`, comment.value);
 }
 async function sendComment() {
-  if (!comment.value.trim() || !activeFile.value) return;
+  if (commentBusy.value || !comment.value.trim() || !activeFile.value) return;
   commentBusy.value = true;
   try {
     await app.call('comment', { body: comment.value, draft: commentDraft.value, ...(inlinePosition.value ? { position: inlinePosition.value } : {}) });
@@ -198,12 +211,14 @@ async function setPreview(value: string) {
   previewKey.value++;
 }
 async function mrAction(action: string) {
+  if (mrActionBusy.value) return;
+  mrActionBusy.value = true;
   try {
     await app.call(action);
-    if (action === 'ready') app.review.value!.mr.draft = false;
-    if (action === 'approve' || action === 'unapprove') await app.refresh();
+    if (['ready', 'approve', 'unapprove'].includes(action)) await refreshReview(true);
     notice.value = action === 'ready' ? 'Merge request marked ready' : action === 'approve' ? 'Merge request approved' : 'Approval removed';
   } catch { /* error is shown in the header */ }
+  finally { mrActionBusy.value = false; }
 }
 async function sendSummary() {
   const isChangeRequest = summaryIntent.value === 'changes';
@@ -211,9 +226,46 @@ async function sendSummary() {
   catch { /* error is shown in the header */ }
 }
 async function sendReply(discussionId: string) {
-  if (!replyText.value.trim()) return;
-  try { await app.call('reply', { discussionId, body: replyText.value, draft: commentDraft.value }); replyText.value = ''; app.setDraft(`reply:${discussionId}`, ''); replyTo.value = ''; await app.refresh(); }
+  if (replyBusy.value || !replyText.value.trim()) return;
+  replyBusy.value = true;
+  try { await app.call('reply', { discussionId, body: replyText.value, draft: commentDraft.value }); replyText.value = ''; app.setDraft(`reply:${discussionId}`, ''); replyTo.value = ''; await refreshReview(true); }
   catch { /* error is shown in the header */ }
+  finally { replyBusy.value = false; }
+}
+function startEditDraft(note: any) { editingDraftNote.value = String(note.id); draftNoteText.value = app.drafts.value[`draft-note:${note.id}`] ?? note.note; }
+async function saveDraftNote(note: any) {
+  if (draftNotesBusy.value || !draftNoteText.value.trim()) return;
+  draftNotesBusy.value = true;
+  try {
+    await app.call('edit-draft-note', { draftNoteId: note.id, note: draftNoteText.value });
+    app.setDraft(`draft-note:${note.id}`, '');
+    editingDraftNote.value = '';
+    await refreshReview(true);
+    notice.value = 'Draft note saved';
+  } catch { /* error is shown in the header */ }
+  finally { draftNotesBusy.value = false; }
+}
+async function deleteDraftNote(note: any) {
+  if (draftNotesBusy.value || !window.confirm('Delete this draft note?')) return;
+  draftNotesBusy.value = true;
+  try {
+    await app.call('delete-draft-note', { draftNoteId: note.id });
+    app.setDraft(`draft-note:${note.id}`, '');
+    if (editingDraftNote.value === String(note.id)) editingDraftNote.value = '';
+    await refreshReview(true);
+    notice.value = 'Draft note deleted';
+  } catch { /* error is shown in the header */ }
+  finally { draftNotesBusy.value = false; }
+}
+async function publishDraftNotes() {
+  if (draftNotesBusy.value || !draftNoteList.value.length) return;
+  draftNotesBusy.value = true;
+  try {
+    await app.call('publish-drafts');
+    await refreshReview(true);
+    notice.value = 'Draft notes published';
+  } catch { /* error is shown in the header */ }
+  finally { draftNotesBusy.value = false; }
 }
 async function saveEditedNote(discussionId: string, noteId: string) {
   try { await app.call('edit-comment', { discussionId, noteId, body: editText.value }); editingNote.value = ''; app.setDraft(`edit:${noteId}`, ''); await app.refresh(); }
@@ -299,15 +351,15 @@ watch([continuous, displayedFiles], async () => {
 watch(() => app.selectedPath.value, path => {
   const file = app.files.value.find(row => fileName(row) === path);
   if (!file) return;
-  comment.value = app.drafts.value[`${fileName(file)}:${file.identity || 'unknown'}`] || '';
+  comment.value = app.drafts.value[`comment:${fileName(file)}`] || '';
   inlinePosition.value = null;
-  if (file.identity && app.reviewed.value[fileName(file)] !== file.identity) app.markReviewed(file);
 });
 watch(previewOpen, open => { if (open && !previewCandidates.value.length) void discoverPreview(); });
 watch(comment, saveDraft);
 watch(summary, value => { if (summaryOpen.value) app.setDraft('mr:summary', value); });
 watch(replyText, value => { if (replyTo.value) app.setDraft(`reply:${replyTo.value}`, value); });
 watch(editText, value => { if (editingNote.value) app.setDraft(`edit:${editingNote.value}`, value); });
+watch(draftNoteText, value => { if (editingDraftNote.value) app.setDraft(`draft-note:${editingDraftNote.value}`, value); });
 watch(displayedFiles, files => { if (files.length && !files.some(file => fileName(file) === app.selectedPath.value)) setFile(files[0]); });
 </script>
 
@@ -324,10 +376,10 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
           <button class="quiet" @click="showSummary('summary')">Summary</button>
           <button class="quiet" @click="showSummary('changes')">Request changes</button>
-          <button class="quiet" @click="mrAction('unapprove')">Unapprove</button>
-          <button class="quiet" @click="app.call('publish-drafts').then(() => { notice = 'Draft notes published'; refreshReview(); })">Publish drafts</button>
-          <button v-if="app.review.value.mr.draft" class="quiet" @click="mrAction('ready')">Mark ready</button>
-          <button class="approve" @click="mrAction('approve')">Approve</button>
+          <button class="quiet" :disabled="mrActionBusy" @click="mrAction('unapprove')">Unapprove</button>
+          <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="publishDraftNotes">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
+          <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="mrAction('ready')">Mark ready</button>
+          <button class="approve" :disabled="mrActionBusy" @click="mrAction('approve')">Approve</button>
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
         </div>
@@ -360,7 +412,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <template v-else-if="activeFile">
           <div class="file-toolbar">
             <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-            <div class="file-actions"><button class="quiet" @click="navigate(-1)">← Previous</button><button class="quiet" @click="navigate(1)">Next unreviewed →</button><span class="toolbar-rule"/><button class="quiet" :class="{ chosen: mode === 'split' }" @click="mode = 'split'">Split</button><button class="quiet" :class="{ chosen: mode === 'unified' }" @click="mode = 'unified'">Unified</button><label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap</label><label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous</label></div>
+            <div class="file-actions"><button class="quiet" @click="navigate(-1)">← Previous</button><button class="quiet" @click="navigate(1)">Next unreviewed →</button><button class="quiet" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button><label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label><span class="toolbar-rule"/><button class="quiet" :class="{ chosen: mode === 'split' }" @click="mode = 'split'">Split</button><button class="quiet" :class="{ chosen: mode === 'unified' }" @click="mode = 'unified'">Unified</button><label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap</label><label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous</label></div>
           </div>
           <div v-if="activeFile.collapsed || activeFile.too_large" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
           <div class="diff-scroll">
@@ -377,11 +429,29 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             </template>
           </div>
           <div class="comment-panel">
+            <section class="draft-notes" aria-label="GitLab draft notes">
+              <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
+              <p v-if="!draftNoteList.length">No GitLab draft notes.</p>
+              <article v-for="note in draftNoteList" :key="note.id" class="note draft-note">
+                <template v-if="editingDraftNote === String(note.id)">
+                  <textarea v-model="draftNoteText" rows="3" aria-label="Edit GitLab draft note" :disabled="draftNotesBusy"/>
+                  <button class="quiet" :disabled="draftNotesBusy || !draftNoteText.trim()" @click="saveDraftNote(note)">{{ draftNotesBusy ? 'Saving…' : 'Save draft note' }}</button>
+                  <button class="quiet" :disabled="draftNotesBusy" @click="editingDraftNote = ''; draftNoteText = ''">Cancel</button>
+                </template>
+                <template v-else>
+                  <!-- eslint-disable-next-line vue/no-v-html -->
+                  <div class="markdown" v-html="renderMarkdown(note.note)"/>
+                  <span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'unpublished' }}</span>
+                  <button class="quiet" :disabled="draftNotesBusy" :aria-label="`Edit draft note ${note.id}`" @click="startEditDraft(note)">Edit draft</button>
+                  <button class="quiet" :disabled="draftNotesBusy" :aria-label="`Delete draft note ${note.id}`" @click="deleteDraftNote(note)">Delete draft</button>
+                </template>
+              </article>
+            </section>
             <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
               <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
               <!-- eslint-disable-next-line vue/no-v-html -->
               <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="emoji in reactions" :key="emoji" class="reaction" :aria-label="`React with ${emoji}`" @click="toggleReaction(note, emoji)">{{ (note.award_emoji || []).filter((award: any) => award.name === emoji).length ? `${emoji} ${(note.award_emoji || []).filter((award: any) => award.name === emoji).length}` : emoji }}</button></div></article>
-              <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…"/><button class="approve">Send reply</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
+              <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
               <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
             </details>
             <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add a file comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>

@@ -1,4 +1,4 @@
-import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '../utils/gitlab';
+import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '../utils/gitlab.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
@@ -14,12 +14,13 @@ export default defineEventHandler(async event => {
 
   switch (body.action) {
     case 'bootstrap': {
-      const [info, user, projectInfo, diffs, discussions] = await Promise.all([
+      const [info, user, projectInfo, diffs, discussions, draftNotes] = await Promise.all([
         detail(),
         gitlab<any>(`${mr.host}/api/v4/user`, token),
         gitlab<any>(project, token),
         gitlabPages<Diff>(`${base}/diffs`, token),
         gitlabPages<any>(`${base}/discussions`, token),
+        gitlabPages<any>(`${base}/draft_notes`, token),
       ]);
       const owners = await loadCodeowners(project, info.target_branch, token);
       const ownership = await verifyOwners(owners.rules, user, projectInfo, token, mr.host);
@@ -35,12 +36,12 @@ export default defineEventHandler(async event => {
         mr: { ...info, diff_refs: info.diff_refs || {} }, user: { id: user.id, username: user.username, name: user.name },
         project: { id: projectInfo.id, path: projectInfo.path_with_namespace, namespace: projectInfo.namespace?.full_path },
         diffs: diffs.map(file => ({ ...file, identity: heads.find(head => head.path === (file.deleted_file ? file.old_path : file.new_path))?.sha ?? null })),
-        discussions, codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning || ownership.warning,
+        discussions, draftNotes, codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning || ownership.warning,
       };
     }
     case 'refresh': {
-      const [info, discussions] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token)]);
-      return { mr: info, discussions };
+      const [info, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
+      return { mr: info, discussions, draftNotes };
     }
     case 'preview': {
       const info = await detail();
@@ -65,6 +66,15 @@ export default defineEventHandler(async event => {
     case 'edit-comment': {
       const { discussionId, noteId, body: note } = body.payload || {};
       return gitlab(`${base}/discussions/${encodeURIComponent(discussionId)}/notes/${encodeURIComponent(noteId)}`, token, { method: 'PUT', body: json({ body: note }) });
+    }
+    case 'edit-draft-note': {
+      const { draftNoteId, note } = body.payload || {};
+      if (typeof note !== 'string' || !note.trim()) throw createError({ statusCode: 400, statusMessage: 'Draft note text is required' });
+      return gitlab(`${base}/draft_notes/${encodeURIComponent(draftNoteId)}`, token, { method: 'PUT', body: json({ note }) });
+    }
+    case 'delete-draft-note': {
+      const { draftNoteId } = body.payload || {};
+      return gitlab(`${base}/draft_notes/${encodeURIComponent(draftNoteId)}`, token, { method: 'DELETE' });
     }
     case 'delete-comment': {
       const { discussionId, noteId } = body.payload || {};
@@ -91,7 +101,7 @@ export default defineEventHandler(async event => {
     case 'unapprove':
       return gitlab(`${base}/unapprove`, token, { method: 'POST', body: '{}' });
     case 'ready':
-      return gitlab(base, token, { method: 'PUT', body: json({ draft: false }) });
+      return gitlab(`${base}/notes`, token, { method: 'POST', body: json({ body: '/ready' }) });
     case 'summary': {
       const note = String(body.payload?.body || '');
       if (!note.trim()) throw createError({ statusCode: 400, statusMessage: 'Summary text is required' });

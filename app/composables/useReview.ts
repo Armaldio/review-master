@@ -1,7 +1,7 @@
 import { computed, ref, shallowRef } from 'vue';
 
 export type DiffFile = { old_path: string; new_path: string; diff: string; old_id?: string; new_id?: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; identity: string | null };
-export type ReviewData = { mr: any; user: any; project: any; diffs: DiffFile[]; discussions: any[]; codeowners: any[]; ownerStatus?: Record<string, boolean | null>; ownerWarning?: string };
+export type ReviewData = { mr: any; user: any; project: any; diffs: DiffFile[]; discussions: any[]; draftNotes: any[]; codeowners: any[]; ownerStatus?: Record<string, boolean | null>; ownerWarning?: string };
 
 export function useReview() {
   const mrUrl = ref('');
@@ -14,6 +14,7 @@ export function useReview() {
   const backoffMs = ref(90_000);
   const drafts = ref<Record<string, string>>({});
   const reviewed = ref<Record<string, string>>({});
+  const autoAdvance = ref(false);
   const files = computed(() => review.value?.diffs ?? []);
   const selected = computed(() => files.value.find(file => (file.new_file ? file.new_path : file.deleted_file ? file.old_path : file.new_path) === selectedPath.value) ?? files.value[0] ?? null);
   const storageKey = computed(() => {
@@ -25,14 +26,16 @@ export function useReview() {
     if (!import.meta.client || !storageKey.value) return;
     try {
       const value = JSON.parse(localStorage.getItem(storageKey.value) || '{}');
-      drafts.value = value.drafts || {};
+      drafts.value = value.drafts && typeof value.drafts === 'object' ? value.drafts : {};
+      autoAdvance.value = value.autoAdvance === true;
       const old = value.reviewed || {};
       reviewed.value = Object.fromEntries(Object.entries(old).filter(([path, sha]) => typeof sha === 'string' && files.value.some(file => (file.deleted_file ? file.old_path : file.new_path) === path && file.identity && file.identity === sha))) as Record<string, string>;
-    } catch { drafts.value = {}; reviewed.value = {}; }
+    } catch { drafts.value = {}; reviewed.value = {}; error.value = 'Local review state could not be loaded from browser storage.'; }
   }
   function persist() {
     if (!import.meta.client || !storageKey.value) return;
-    localStorage.setItem(storageKey.value, JSON.stringify({ drafts: drafts.value, reviewed: reviewed.value }));
+    try { localStorage.setItem(storageKey.value, JSON.stringify({ drafts: drafts.value, reviewed: reviewed.value, autoAdvance: autoAdvance.value })); }
+    catch { error.value = 'Local review state could not be saved to browser storage.'; }
   }
   async function call<T = any>(action: string, payload?: Record<string, unknown>): Promise<T> {
     error.value = '';
@@ -69,17 +72,21 @@ export function useReview() {
       const current = review.value.mr;
       const oldDiffIdentity = `${current.sha}:${current.diff_refs?.base_sha || ''}:${current.diff_refs?.head_sha || ''}:${current.diff_refs?.start_sha || ''}`;
       const nextDiffIdentity = `${updated.mr.sha}:${updated.mr.diff_refs?.base_sha || ''}:${updated.mr.diff_refs?.head_sha || ''}:${updated.mr.diff_refs?.start_sha || ''}`;
-      review.value = { ...review.value, mr: updated.mr, discussions: updated.discussions };
+      review.value = { ...review.value, mr: updated.mr, discussions: updated.discussions, draftNotes: updated.draftNotes };
       if (nextDiffIdentity !== oldDiffIdentity) await bootstrap(mrUrl.value);
       refreshedAt.value = Date.now();
     } catch { /* error is visible in the review header */
     } finally { busy.value = false; }
   }
   function setDraft(key: string, value: string) { drafts.value = { ...drafts.value, [key]: value }; persist(); }
-  function markReviewed(file: DiffFile) {
+  function setReviewed(file: DiffFile, value: boolean) {
     const path = file.new_file ? file.new_path : file.deleted_file ? file.old_path : file.new_path;
-    if (file.identity) reviewed.value = { ...reviewed.value, [path]: file.identity };
+    if (!file.identity) return;
+    reviewed.value = value
+      ? { ...reviewed.value, [path]: file.identity }
+      : Object.fromEntries(Object.entries(reviewed.value).filter(([key]) => key !== path)) as Record<string, string>;
     persist();
   }
-  return { mrUrl, review, files, selectedPath, selected, error, busy, refreshedAt, retryAt, drafts, reviewed, call, bootstrap, refresh, setDraft, markReviewed };
+  function setAutoAdvance(value: boolean) { autoAdvance.value = value; persist(); }
+  return { mrUrl, review, files, selectedPath, selected, error, busy, refreshedAt, retryAt, drafts, reviewed, autoAdvance, call, bootstrap, refresh, setDraft, setReviewed, setAutoAdvance };
 }

@@ -19,16 +19,17 @@
     "typecheck": "nuxt typecheck",
     "lint": "nuxt prepare && eslint .",
     "test": "node --test test/*.test.mjs",
-    "benchmark": "node bench/benchmark.mjs"
+    "benchmark": "node bench/benchmark.mjs",
+    "benchmark:browser": "node bench/browser.mjs"
   },
   "engines": {
     "node": ">=20.19.0"
   },
   "dependencies": {
     "@pierre/diffs": "^1.1.3",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.16",
     "marked": "^17.0.5",
-    "nuxt": "^4.1.3",
+    "nuxt": "^4.6.1",
     "open": "^10.2.0"
   },
   "devDependencies": {
