@@ -120,7 +120,10 @@ function setFile(file: any) {
   app.selectedPath.value = fileName(file);
   const key = `comment:${fileName(file)}`;
   comment.value = app.drafts.value[key] || '';
-  if (!continuous.value) document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
+  if (!continuous.value) {
+    document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
+    document.querySelector('.diff-shell.code-view')?.scrollTo({ top: 0 });
+  }
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
 function toggleReviewed() {
@@ -419,7 +422,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="file.new_path + file.identity" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">Comment on file</button></header>
-                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :mode="mode" :wrap="wrap" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :mode="mode" :wrap="wrap" :continuous="true" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>

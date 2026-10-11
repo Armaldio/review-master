@@ -5,8 +5,8 @@ import { chromium } from 'playwright-core';
 
 const root = new URL('../', import.meta.url).pathname;
 const scenarios = [
-  { name: 'many-small-files', files: 40, linesPerFile: 120 },
-  { name: 'two-large-single-hunk-files', files: 2, linesPerFile: 20_000 },
+  { name: 'forty-small-and-medium-files', lineCounts: [...Array(20).fill(60), ...Array(20).fill(300)] },
+  { name: 'two-large-single-hunk-files', lineCounts: [20_000, 20_000] },
 ];
 const errors = [];
 const portServer = createServer();
@@ -35,13 +35,20 @@ try {
   const results = [];
   const thresholdFailures = [];
   for (const scenario of scenarios) {
-    const paths = Array.from({ length: scenario.files }, (_, index) => `src/file-${String(index + 1).padStart(3, '0')}.ts`);
-    const patch = path => `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${scenario.linesPerFile} @@\n${Array.from({ length: scenario.linesPerFile }, (_, index) => `+export const item${index} = ${index};`).join('\n')}\n`;
+    const paths = scenario.lineCounts.map((_, index) => `src/file-${String(index + 1).padStart(3, '0')}.ts`);
+    const maxLinesPerFile = Math.max(...scenario.lineCounts);
+    const patch = (path, lineCount) => `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lineCount} @@\n${Array.from({ length: lineCount }, (_, index) => `+export const item${index} = ${index};`).join('\n')}\n`;
     const mr = { id: 77, iid: 7, title: scenario.name, description: '', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'bench', target_branch: 'main', sha: 'head', diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }, source_project_id: 2, target_project_id: 2, author: { username: 'bench', name: 'Benchmark' } };
-    const data = { mr, user: { id: 5, username: 'bench', name: 'Benchmark' }, project: { id: 2, path: 'group/app' }, discussions: [], draftNotes: [], codeowners: [], diffs: paths.map(path => ({ old_path: path, new_path: path, old_id: 'old-blob', new_id: 'new-blob', diff: patch(path), new_file: true, deleted_file: false, renamed_file: false, identity: path })) };
+    const data = { mr, user: { id: 5, username: 'bench', name: 'Benchmark' }, project: { id: 2, path: 'group/app' }, discussions: [], draftNotes: [], codeowners: [], diffs: paths.map((path, index) => ({ old_path: path, new_path: path, old_id: 'old-blob', new_id: 'new-blob', diff: patch(path, scenario.lineCounts[index]), new_file: true, deleted_file: false, renamed_file: false, identity: path })) };
     const context = await browser.newContext();
     const page = await context.newPage();
     const commentPayloads = [];
+    await page.addInitScript(() => {
+      window.__longTasks = [];
+      if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+        new PerformanceObserver(list => window.__longTasks.push(...list.getEntries().map(entry => entry.duration))).observe({ type: 'longtask', buffered: true });
+      }
+    });
     page.on('pageerror', error => errors.push(`${scenario.name}: ${error.message}`));
     page.on('console', message => { if (message.type() === 'error') errors.push(`${scenario.name}: ${message.text()}`); });
     await context.route('**/api/gitlab', route => {
@@ -55,58 +62,125 @@ try {
     const started = performance.now();
     await page.getByRole('textbox', { name: 'Merge request URL' }).fill(mr.web_url);
     await page.getByRole('button', { name: 'Open review' }).click();
+    await page.locator(`.diff-shell[data-path="${paths[0]}"] diffs-container`).waitFor({ timeout: 30_000 });
+    await page.evaluate(() => {
+      const scrollRoot = document.querySelector('.diff-shell.code-view') || document.querySelector('.diff-scroll');
+      const root = document.querySelector('diffs-container');
+      window.__diffMutations = 0;
+      window.__lastDiffMutationAt = performance.now();
+      window.__diffObservers = [scrollRoot, root.shadowRoot].map(target => {
+        const observer = new MutationObserver(records => {
+          window.__diffMutations += records.length;
+          window.__lastDiffMutationAt = performance.now();
+        });
+        observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+        return observer;
+      });
+    });
     await page.waitForFunction(path => {
       const root = document.querySelector(`.diff-shell[data-path="${path}"] diffs-container`);
       return root?.shadowRoot?.querySelector('[data-line]') != null;
     }, paths[0], { timeout: 30_000 });
     const firstVisibleLineMs = performance.now() - started;
+    const highlightSettled = await page.evaluate(async () => {
+      const startedAt = performance.now();
+      return new Promise(resolve => {
+        const check = () => performance.now() - startedAt >= 1_000 && performance.now() - window.__lastDiffMutationAt >= 300
+          ? resolve({ ms: performance.now() - startedAt, settled: true })
+          : performance.now() - startedAt >= 10_000
+            ? resolve({ ms: performance.now() - startedAt, settled: false })
+          : setTimeout(check, 50);
+        check();
+      });
+    });
     const cdp = await context.newCDPSession(page);
     await cdp.send('Performance.enable');
     const beforeHeap = await cdp.send('Runtime.getHeapUsage');
     const beforeDom = await cdp.send('Memory.getDOMCounters');
     const beforeMetrics = await cdp.send('Performance.getMetrics');
-
-    await page.evaluate(() => {
-      const root = document.querySelector('diffs-container');
-      window.__diffMutations = 0;
-      window.__diffObserver = new MutationObserver(records => { window.__diffMutations += records.length; });
-      window.__diffObserver.observe(root.shadowRoot, { childList: true, subtree: true, attributes: true, characterData: true });
-    });
+    const heapSamples = [beforeHeap.usedSize];
+    if (process.env.PROFILE_SCROLL === '1') {
+      await cdp.send('Profiler.enable');
+      await cdp.send('Profiler.setSamplingInterval', { interval: 1_000 });
+      await cdp.send('Profiler.start');
+    }
+    await page.evaluate(() => { window.__diffMutations = 0; window.__longTaskStart = window.__longTasks.length; });
     const scroll = await page.evaluate(async fullRange => {
-      const scroller = document.querySelector('.diff-scroll');
+      const scroller = document.querySelector('.diff-shell.code-view') || document.querySelector('.diff-scroll');
       const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       const frameTimes = [];
-      for (let step = 1; step <= 30; step++) {
-        const startedAt = performance.now();
-        scroller.scrollTop = fullRange
-          ? maxScroll * step / 30
-          : Math.min(maxScroll, scroller.scrollTop + Math.max(180, scroller.clientHeight * 0.45));
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        frameTimes.push(performance.now() - startedAt);
+      const roundTotals = [];
+      for (let round = 0; round < 3; round++) {
+        scroller.scrollTop = 0;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const roundStarted = performance.now();
+        for (let step = 1; step <= 30; step++) {
+          const startedAt = performance.now();
+          scroller.scrollTop = fullRange
+            ? maxScroll * step / 30
+            : Math.min(maxScroll, scroller.scrollTop + Math.max(180, scroller.clientHeight * 0.45));
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          frameTimes.push(performance.now() - startedAt);
+        }
+        roundTotals.push(performance.now() - roundStarted);
       }
-      await new Promise(resolve => requestAnimationFrame(resolve));
       frameTimes.sort((a, b) => a - b);
-      return { totalMs: frameTimes.reduce((sum, value) => sum + value, 0), p95FrameMs: frameTimes[Math.ceil(frameTimes.length * 0.95) - 1], maxFrameMs: frameTimes.at(-1), mutations: window.__diffMutations };
-    }, scenario.linesPerFile > 2_000);
+      roundTotals.sort((a, b) => a - b);
+      return { median30FramesMs: roundTotals[1], p95FrameMs: frameTimes[Math.ceil(frameTimes.length * 0.95) - 1], maxFrameMs: frameTimes.at(-1), mutations: window.__diffMutations };
+    }, maxLinesPerFile > 2_000);
+    await page.waitForTimeout(50);
+    const longTasks = await page.evaluate(() => window.__longTasks.slice(window.__longTaskStart));
     const afterMetrics = await cdp.send('Performance.getMetrics');
     const afterHeap = await cdp.send('Runtime.getHeapUsage');
     const afterDom = await cdp.send('Memory.getDOMCounters');
+    let cpuProfileTop = [];
+    if (process.env.PROFILE_SCROLL === '1') {
+      const { profile } = await cdp.send('Profiler.stop');
+      const nodes = new Map(profile.nodes.map(node => [node.id, node.callFrame]));
+      const weightedSamples = new Map();
+      for (let index = 0; index < profile.samples.length; index++) {
+        const nodeId = profile.samples[index];
+        weightedSamples.set(nodeId, (weightedSamples.get(nodeId) || 0) + (profile.timeDeltas[index] || 0));
+      }
+      cpuProfileTop = [...weightedSamples].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([id, microseconds]) => ({
+        function: nodes.get(id)?.functionName || '(anonymous)',
+        url: nodes.get(id)?.url || '',
+        line: nodes.get(id)?.lineNumber ?? -1,
+        sampledMs: Number((microseconds / 1_000).toFixed(1)),
+      }));
+      await cdp.send('Profiler.disable');
+    }
     const diffDomNodes = await page.evaluate(() => document.querySelector('diffs-container')?.shadowRoot?.querySelectorAll('*').length || 0);
     const renderedLines = await page.evaluate(() => document.querySelector('diffs-container')?.shadowRoot?.querySelectorAll('[data-line]').length || 0);
+    await page.evaluate(() => { window.__diffMutations = 0; });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { window.__diffMutations = 0; });
+    await page.getByRole('button', { name: '↻ Refresh' }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.top-actions button')].some(button => button.textContent?.trim() === '↻ Refresh' && !button.disabled));
+    await page.waitForTimeout(300);
+    const discussionRefreshMutations = await page.evaluate(() => window.__diffMutations);
 
     const switches = [];
-    const switchCount = Math.min(5, paths.length - 1);
-    for (let index = 0; index < switchCount; index++) {
-      const target = paths[index + 1];
+    const switchIndexes = [...new Set([0.1, 0.25, 0.5, 0.75, 1].map(fraction => Math.min(paths.length - 1, Math.max(1, Math.ceil(paths.length * fraction) - 1))))];
+    for (const index of switchIndexes) {
+      const target = paths[index];
       const switchStarted = performance.now();
-      await page.locator('.file-row').nth(index + 1).click();
+      await page.locator('.file-row').nth(index).click();
       await page.waitForFunction(path => {
         const root = document.querySelector(`.diff-shell[data-path="${path}"] diffs-container`);
         return root?.shadowRoot?.querySelector('[data-line]') != null;
       }, target, { timeout: 30_000 });
       switches.push(performance.now() - switchStarted);
+      heapSamples.push((await cdp.send('Runtime.getHeapUsage')).usedSize);
     }
-    if (scenario.linesPerFile > 2_000) {
+    if (maxLinesPerFile > 2_000) {
+      for (const mode of ['Unified', 'Split']) {
+        await page.getByRole('button', { name: mode, exact: true }).click();
+        await page.waitForFunction(path => {
+          const root = document.querySelector(`.diff-shell[data-path="${path}"] diffs-container`);
+          return root?.shadowRoot?.querySelector('[data-line]') != null;
+        }, paths.at(-1));
+      }
       const additions = page.locator('diffs-container [data-line]');
       await additions.first().click();
       await page.locator('#review-comment').fill('Single-line selection benchmark');
@@ -128,32 +202,43 @@ try {
     switches.sort((a, b) => a - b);
     const result = {
       scenario: scenario.name,
-      files: scenario.files,
-      changedLinesPerFile: scenario.linesPerFile,
+      files: paths.length,
+      changedLinesPerFile: { min: Math.min(...scenario.lineCounts), max: maxLinesPerFile },
+      totalChangedLines: scenario.lineCounts.reduce((sum, value) => sum + value, 0),
       firstVisibleLineMs: Number(firstVisibleLineMs.toFixed(1)),
-      scroll30FramesMs: Number(scroll.totalMs.toFixed(1)),
+      highlightSettledMs: Number(highlightSettled.ms.toFixed(1)),
+      highlightSettled: highlightSettled.settled,
+      scroll30FramesMs: Number(scroll.median30FramesMs.toFixed(1)),
       scrollP95FrameMs: Number(scroll.p95FrameMs.toFixed(1)),
       scrollMaxFrameMs: Number(scroll.maxFrameMs.toFixed(1)),
       diffDomMutationsDuringScroll: scroll.mutations,
       medianFileSwitchMs: switches.length ? Number(switches[Math.floor(switches.length / 2)].toFixed(1)) : null,
       mainThreadHeapUsedMb: Number((afterHeap.usedSize / 1024 / 1024).toFixed(1)),
-      mainThreadHeapDeltaMb: Number(((afterHeap.usedSize - beforeHeap.usedSize) / 1024 / 1024).toFixed(1)),
+      mainThreadHeapPeakMb: Number((Math.max(...heapSamples, afterHeap.usedSize) / 1024 / 1024).toFixed(1)),
+      mainThreadHeapDeltaMb: Number(((Math.max(...heapSamples, afterHeap.usedSize) - beforeHeap.usedSize) / 1024 / 1024).toFixed(1)),
       domNodes: afterDom.nodes,
       domNodeDelta: afterDom.nodes - beforeDom.nodes,
       diffDomNodes,
       renderedLines,
       layoutCountDuringScroll: Number((metric(afterMetrics, 'LayoutCount') - metric(beforeMetrics, 'LayoutCount')).toFixed(0)),
       styleRecalcCountDuringScroll: Number((metric(afterMetrics, 'RecalcStyleCount') - metric(beforeMetrics, 'RecalcStyleCount')).toFixed(0)),
+      longTaskCountDuringScroll: longTasks.length,
+      maxLongTaskMsDuringScroll: Number(Math.max(0, ...longTasks).toFixed(1)),
+      diffDomMutationsDuringDiscussionRefresh: discussionRefreshMutations,
+      ...(cpuProfileTop.length ? { cpuProfileTop } : {}),
     };
-    if (result.firstVisibleLineMs > 10_000) thresholdFailures.push(`${scenario.name}: first visible line exceeded 10 s`);
+    if (result.firstVisibleLineMs > 8_000) thresholdFailures.push(`${scenario.name}: first visible line exceeded 8 s`);
+    if (!result.highlightSettled) thresholdFailures.push(`${scenario.name}: highlighter did not settle within 10 s`);
     if (result.scrollP95FrameMs > 250 || result.scroll30FramesMs > 10_000) thresholdFailures.push(`${scenario.name}: scroll exceeded 250 ms p95 or 10 s total`);
-    if ((result.medianFileSwitchMs ?? 0) > 5_000) thresholdFailures.push(`${scenario.name}: file switch exceeded 5 s`);
-    if (result.domNodes > 15_000 || result.mainThreadHeapUsedMb > 1_000) thresholdFailures.push(`${scenario.name}: main-thread DOM or heap exceeded its memory budget`);
+    if ((result.medianFileSwitchMs ?? 0) > 2_500) thresholdFailures.push(`${scenario.name}: file switch exceeded 2.5 s`);
+    if (result.domNodes > 12_000 || result.mainThreadHeapPeakMb > 256) thresholdFailures.push(`${scenario.name}: main-thread DOM or heap exceeded its memory budget`);
+    if (result.maxLongTaskMsDuringScroll > 500) thresholdFailures.push(`${scenario.name}: a main-thread long task exceeded 500 ms during scrolling`);
+    if (result.diffDomMutationsDuringDiscussionRefresh !== 0) thresholdFailures.push(`${scenario.name}: discussion polling mutated the unchanged diff DOM`);
     results.push(result);
     await context.close();
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join('; ')}`);
-  console.log(JSON.stringify({ browser: 'Chromium headless, production Nitro server', thresholds: { firstVisibleLineMs: 10_000, scrollP95FrameMs: 250, scroll30FramesMs: 10_000, medianFileSwitchMs: 5_000, domNodes: 15_000, mainThreadHeapMb: 1_000 }, thresholdFailures, results }, null, 2));
+  console.log(JSON.stringify({ browser: 'Chromium headless, production Nitro server', thresholds: { firstVisibleLineMs: 8_000, scrollP95FrameMs: 250, scroll30FramesMs: 10_000, medianFileSwitchMs: 2_500, domNodes: 12_000, mainThreadHeapMb: 256, maxLongTaskMs: 500 }, thresholdFailures, results }, null, 2));
   if (thresholdFailures.length) process.exitCode = 1;
 } finally {
   if (browser) await browser.close();

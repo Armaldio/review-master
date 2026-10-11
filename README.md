@@ -40,9 +40,22 @@ npm run benchmark
 npm run benchmark:browser
 ```
 
-`npm run benchmark` measures parsing time and heap change for a 20,000 added-line patch using `@pierre/diffs`. After `npm run build`, `npm run benchmark:browser` uses headless Chromium and the production Nitro build to measure first render, DOM size, 30-frame scrolling, and median repeated file switching for two 20,000-line diffs. On the local Chromium run, parsing took 35.4 ms with a 4.7 MB heap increase; browser first render took 970.8 ms, kept 43 diff DOM nodes, 30 scrolling frames took 15.4 s, and median file switching took 5.55 s. Reducing Pierre's virtualizer overscan from 1,000 px to 250 px improved scrolling from 18.7 s to 15.4 s and switching from 6.55 s to 5.55 s in these runs. Very large diffs therefore remain expensive to scroll and switch despite bounded rendered DOM; timings vary by browser and host. Discussion polling updates only the discussion and draft-note lists; unchanged diff props keep the rendered diff untouched. These are local synthetic measurements, not a GitLab network benchmark. GitLab may omit diffs for collapsed or oversized files; the review shows that state rather than treating missing content as an empty file. Diff, discussion and draft-note API results are capped at 1,000 records per refresh.
+`npm run benchmark` measures parsing time and heap change for a 20,000 added-line patch. The browser benchmark starts the production Nitro build in headless Chromium and covers 40 files of 60–300 changed lines each and two 20,000-line single-hunk files. It measures initial usable rows, repeated scrolling (three 30-frame rounds), file switching, heap, DOM, long tasks and layout/style recalculations. It also checks large-file split/unified switching, line/range comment positions, and that a discussion refresh does not mutate the unchanged diff.
 
-`npm audit` currently reports 14 high or critical findings in transitive Nuxt tooling dependencies. The suggested full fix downgrades Nuxt to 3.7.4, so it was not applied; review these dependencies again when compatible upstream fixes are available.
+| Pathological workload | Earlier PR baseline | Final pass |
+| --- | ---: | ---: |
+| First usable diff row | 971 ms | 560 ms |
+| 30 scroll frames | 15.4 s | 1.015 s median (three rounds) |
+| Scroll frame p95 | not recorded | 60.5 ms across 90 frames |
+| Median file switch | 5.55 s | 254 ms |
+| Peak main-thread heap | not recorded | 11.6 MB |
+| Mounted diff rows | 100 | 28 |
+
+The final 40-file run rendered its first row in 704 ms, switched files in 97 ms median, and used 17.6 MB peak main-thread heap. The parser benchmark took 30.3 ms with a 4.4 MB heap increase. The earlier scroll harness did not wait for rendering to settle; the final harness waits for a rendered row and repeats the same scrolling path three times, so its scroll results are more representative and less sensitive to one delayed frame. Synthetic local measurements vary with host load and are not a GitLab network benchmark.
+
+Profiling the earlier 20k-line view showed repeated `getBoundingClientRect` calls in Pierre's virtualizer's scroll-anchor work consuming about 3.2 seconds over 30 frames, in addition to code-column DOM updates. The large standalone-file path now uses Pierre's `CodeView`, which virtualizes with numeric line anchors, and caps syntax tokenization at 10,000 lines for larger diffs. Remaining rows keep line numbers, selection, comments and discussions, while avoiding a syntax-tokenization pass over every line. Pierre remains because it provides the required virtualized diff interactions and the measured bottleneck was in layout/highlighting work; replacing the diff engine is not supported by benchmark evidence. Discussion polling leaves unchanged diff DOM untouched in the browser regression check. Very large single-hunk files remain the most expensive path, and lines beyond the 10,000-line syntax limit are plain text.
+
+`npm audit` reports 14 findings (7 high, 7 critical), all in the Nuxt/Nitro development and build dependency tree; `npm audit --omit=dev` reports zero. Findings include simple-git and its argv parser through Nuxt DevTools, which is disabled in this app, node-forge through the development server chain, and globbing/micromatch packages used by build tooling. They do not ship in the generated production Nitro package, but remain relevant when installing or running the development/build toolchain. A dry-run of `npm audit fix` offered no compatible changes; the forced full fix downgrades Nuxt 4.6.1 to 3.7.4. No unsafe downgrade or transitive major override was applied. The remaining audit findings should be rechecked after upstream compatible releases.
 
 ## Removed from the previous application
 
