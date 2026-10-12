@@ -80,4 +80,4 @@ jobs:
           NODE
       - name: Publish with npm trusted publishing
         if: steps.registry.outputs.already-published != 'true'
-        run: npm publish release/*.tgz --provenance --access public
+        run: npm publish ./release/*.tgz --provenance --access public
