@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
 const root = new URL('../', import.meta.url).pathname;
@@ -27,12 +28,38 @@ async function availablePort() {
 
 test('review screen preserves preview navigation and local drafts while reviewing files', { timeout: 120_000 }, async t => {
   const port = await availablePort();
-  const child = spawn('npm', ['run', 'dev', '--', '--host', '127.0.0.1', '--port', String(port)], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+  const nuxtCli = fileURLToPath(new URL('../node_modules/nuxt/bin/nuxt.mjs', import.meta.url));
+  const child = spawn(process.execPath, [nuxtCli, 'dev', '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: process.env,
+    detached: process.platform !== 'win32',
+  });
   const serverLogs = [];
   child.stdout.on('data', value => serverLogs.push(value.toString()));
   child.stderr.on('data', value => serverLogs.push(value.toString()));
   let browser;
-  t.after(async () => { if (browser) await browser.close(); child.kill('SIGTERM'); });
+  t.after(async () => {
+    if (browser) await browser.close();
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    try {
+      if (process.platform === 'win32') child.kill('SIGTERM');
+      else process.kill(-child.pid, 'SIGTERM');
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
+    const stopped = await Promise.race([exited.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 5_000))]);
+    if (!stopped) {
+      try {
+        if (process.platform === 'win32') child.kill('SIGKILL');
+        else process.kill(-child.pid, 'SIGKILL');
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+      }
+      await exited;
+    }
+  });
   const baseUrl = `http://127.0.0.1:${port}`;
   let ready = false;
   for (let attempt = 0; attempt < 120; attempt++) {
