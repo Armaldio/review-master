@@ -2,7 +2,7 @@ name: Publish to npm
 
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 concurrency:
   group: npm-publish-${{ github.repository }}
