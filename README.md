@@ -1,4 +1,4 @@
-# review-master
+# MergePeek
 
 A local GitLab merge request reviewer. It reads remote merge requests directly from GitLab and does not need a project checkout.
 
@@ -7,18 +7,19 @@ A local GitLab merge request reviewer. It reads remote merge requests directly f
 Requires Node.js 20.19 or newer.
 
 ```sh
-npm install -g review-master
-review-master account add https://gitlab.example.com
-review-master https://gitlab.example.com/group/subgroup/project/-/merge_requests/42
+npm install -g @armaldio/mergepeek
+mpeek https://gitlab.example.com/group/subgroup/project/-/merge_requests/42
 ```
 
-The account command prompts for a token without echoing it, verifies it with GitLab, and atomically stores it in `~/.config/review-master/accounts.json` with owner-only permissions. The token needs GitLab's `api` scope for comments, reviews, approvals, reactions and uploaded images. `XDG_CONFIG_HOME` changes the config directory. Accounts are selected by the exact GitLab host. Remove one with `review-master account remove https://gitlab.example.com`; list configured usernames and hosts with `review-master account list`.
+MergePeek uses an existing `glab` login for the exact GitLab host first. Run `glab auth login --hostname gitlab.example.com` if needed. It asks `glab config get token --host <hostname>` and verifies the candidate against that host's `/api/v4/user` endpoint before using it. This supports glab's host config, keyring and documented environment-token resolution. See [glab config get](https://docs.gitlab.com/cli/config/get/) and [glab auth status](https://docs.gitlab.com/cli/auth/status/). If glab has no usable login for that host, the legacy saved account is used. Add one with `mpeek account add https://gitlab.example.com`; the command prompts for a token without echoing it and atomically stores it in `~/.config/review-master/accounts.json` with owner-only permissions. The token needs GitLab's `api` scope. `XDG_CONFIG_HOME` changes the config directory. `mpeek account list` and `mpeek account remove https://gitlab.example.com` manage these optional fallback accounts. Existing installations can continue using the `review-master` command alias.
 
 The command binds only to `127.0.0.1` on a free port, opens the requested merge request, and exits with the terminal process. Ctrl+C stops the server. No argument prints usage. For local development use `npm run dev` and supply a merge request URL in the page.
 
 ## Security and API behavior
 
-Personal access tokens stay in the local config file and are only sent from Nitro to the matching configured GitLab host. Requests are same-origin, the server binds to loopback, and API redirects are rejected so token headers cannot follow a redirect. Self-managed GitLab hosts are supported by adding an account for each origin. GitLab TLS verification remains enabled.
+GitLab credentials are resolved for the MR URL's exact host. glab credentials are never copied into MergePeek's account file or browser storage; manually configured fallback tokens stay in the existing local config file. Requests are same-origin, the server binds to loopback, and API redirects are rejected so credential headers cannot follow a redirect. GitLab TLS verification remains enabled.
+
+Each local API operation resolves and verifies auth once; glab is not launched per diff row or line. The validation workspace has no installed glab binary, so the auth subprocess test used a mock: 30 local `glab` process launches plus a mocked `/user` check measured 5.96 ms median and 12.66 ms p95, excluding network latency to GitLab. Host, keyring/config and environment candidate behavior is covered by mocked resolver tests; a live keyring login could not be exercised here.
 
 The preview panel is closed by default. Candidates come from successful GitLab deployments and available environments, matched to the merge request head SHA or source branch. It never guesses a deployment URL or uses URLs from notes. Preview URLs must be absolute HTTP(S) URLs without credentials; HTTPS is preferred. The preview iframe receives no GitLab headers and is sandboxed. GitLab's frame restrictions are honored; use “Open” if a site blocks embedding.
 
@@ -39,6 +40,12 @@ npm test
 npm run benchmark
 npm run benchmark:browser
 ```
+
+## npm releases
+
+`.github/workflows/publish-npm.yml` runs on pushes to `main`. It builds and tests, verifies the packed CLI, and publishes only when the exact package version is not already in the registry. Publishing uses GitHub Actions OIDC Trusted Publishing; there is no npm token secret, and the publish job does not run for pull requests. Version changes remain manual.
+
+Before the first automated release, an owner with `@armaldio` npm publish access must verify the scope/package is available and publish `0.1.0` once after this PR is reviewed and merged, then configure the npm [Trusted Publisher](https://docs.npmjs.com/trusted-publishers/) for GitHub owner `Armaldio`, repository `review-master`, and workflow `publish-npm.yml`, allowing direct `npm publish`. Bump to a new version (for example `0.1.1`) and push it to `main` to validate OIDC publishing and provenance. The repository remains `Armaldio/review-master`. This workspace has no authenticated npm session (`npm whoami` requires login), so scope publishing permission is still an owner check; no package was published.
 
 `npm run benchmark` measures parsing time and heap change for a 20,000 added-line patch. The browser benchmark starts the production Nitro build in headless Chromium and covers 40 files of 60–300 changed lines each and two 20,000-line single-hunk files. It measures initial usable rows, repeated scrolling (three 30-frame rounds), file switching, heap, DOM, long tasks and layout/style recalculations. It also checks large-file split/unified switching, line/range comment positions, and that a discussion refresh does not mutate the unchanged diff.
 

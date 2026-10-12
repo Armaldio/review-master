@@ -5,10 +5,11 @@ import { join } from 'node:path';
 import { mkdir, readFile, writeFile, chmod, rename } from 'node:fs/promises';
 import open from 'open';
 
+// Keep the original directory so existing accounts remain available after the rename.
 const dataDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'review-master');
 const accountsFile = join(dataDir, 'accounts.json');
 const args = process.argv.slice(2);
-const usage = () => console.log(`review-master <gitlab-mr-url>\nreview-master account add <https://gitlab.example.com>\nreview-master account list\nreview-master account remove <host>`);
+const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>`);
 const readSecret = () => new Promise((resolve, reject) => {
   if (!process.stdin.isTTY) return reject(new Error('Account setup requires an interactive terminal'));
   process.stdout.write('Personal access token: ');
@@ -43,6 +44,7 @@ const save = async value => {
 };
 
 try {
+  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) { usage(); process.exit(0); }
   if (args[0] === 'account') {
     const accounts = await load();
     if (args[1] === 'add' && args.length === 3) {
@@ -66,9 +68,6 @@ try {
   const mr = new URL(args[0]);
   if (!['https:', 'http:'].includes(mr.protocol) || mr.username || mr.password) throw new Error('Enter an absolute GitLab merge request URL');
   if (!/\/-\/merge_requests\/\d+\/?$/.test(mr.pathname)) throw new Error('URL must end in /-/merge_requests/<iid>');
-  const host = mr.origin;
-  const accounts = await load();
-  if (!accounts.some(a => a.host === host)) throw new Error(`No account for ${host}. Add one with: review-master account add ${host} <token>`);
   const serverFile = new URL('../.output/server/index.mjs', import.meta.url);
   try { await readFile(serverFile); } catch { throw new Error('Production app is not built. Run npm run build first.'); }
   const server = createServer();
@@ -82,7 +81,7 @@ try {
   process.env.REVIEW_MASTER_CONFIG = accountsFile;
   const shutdown = () => { process.exit(0); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
-  console.log(`Reviewing ${mr.toString()} at http://127.0.0.1:${port}`);
+  console.log(`MergePeek reviewing ${mr.toString()} at http://127.0.0.1:${port}`);
   await import(serverFile.href);
   const url = `http://127.0.0.1:${port}/?mr=${encodeURIComponent(mr.toString())}`;
   let ready = false;
@@ -92,4 +91,4 @@ try {
   }
   if (!ready) throw new Error('Local review server did not start');
   await open(url);
-} catch (error) { console.error(`review-master: ${error.message}`); process.exitCode = 1; }
+} catch (error) { console.error(`mpeek: ${error.message}`); process.exitCode = 1; }

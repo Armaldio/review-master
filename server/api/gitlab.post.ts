@@ -27,7 +27,7 @@ export default defineEventHandler(async event => {
       const heads = await mapLimit(diffs, 6, async file => {
         if (file.deleted_file) return { path: file.old_path, sha: 'deleted' };
         try {
-          const response = await fetch(`${project}/repository/files/${encodeURIComponent(file.new_path)}?ref=${encodeURIComponent(info.sha)}`, { method: 'HEAD', headers: { 'PRIVATE-TOKEN': token }, redirect: 'manual' });
+          const response = await fetch(`${project}/repository/files/${encodeURIComponent(file.new_path)}?ref=${encodeURIComponent(info.sha)}`, { method: 'HEAD', headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
           if (!response.ok) return { path: file.new_path, sha: null };
           return { path: file.new_path, sha: response.headers.get('x-gitlab-blob-id') || response.headers.get('x-gitlab-content-sha256') };
         } catch { return { path: file.new_path, sha: null }; }
@@ -52,7 +52,7 @@ export default defineEventHandler(async event => {
       const filePath = String(body.payload?.path || '');
       const ref = String(body.payload?.ref || info.sha);
       const path = encodeURIComponent(filePath);
-      const response = await fetch(`${project}/repository/files/${path}/raw?ref=${encodeURIComponent(ref)}`, { headers: { 'PRIVATE-TOKEN': token }, redirect: 'manual' });
+      const response = await fetch(`${project}/repository/files/${path}/raw?ref=${encodeURIComponent(ref)}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
       if (response.status >= 300 && response.status < 400) throw createError({ statusCode: 502, statusMessage: 'GitLab redirected a file request' });
       if (!response.ok) throw createError({ statusCode: response.status, statusMessage: `Could not load file (${response.status})` });
       return { content: await response.text() };
@@ -147,7 +147,7 @@ async function mapLimit<T, R>(items: T[], limit: number, map: (item: T) => Promi
 async function loadCodeowners(project: string, targetBranch: string, token: string): Promise<{ rules: { pattern: string; owners: string[]; section?: string }[]; warning?: string }> {
   for (const path of ['CODEOWNERS', 'docs/CODEOWNERS', '.gitlab/CODEOWNERS']) {
     const url = `${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(targetBranch)}`;
-    const response = await fetch(url, { headers: { 'PRIVATE-TOKEN': token }, redirect: 'manual' });
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
     if (response.ok) return parseCodeowners(await response.text());
     if (![404, 400].includes(response.status)) return { rules: [], warning: 'CODEOWNERS could not be verified; showing all files.' };
   }

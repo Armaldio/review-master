@@ -8,7 +8,7 @@ export default defineEventHandler(async event => {
   try { image = new URL(query.imageUrl); } catch { throw createError({ statusCode: 400, statusMessage: 'Invalid image URL' }); }
   const isUpload = image.pathname.startsWith('/uploads/') || image.pathname.startsWith(`/api/v4/projects/${mr.encodedProject}/uploads/`);
   if (image.origin !== mr.host || image.username || image.password || !isUpload) throw createError({ statusCode: 403, statusMessage: 'Only images uploaded to this GitLab project can be loaded' });
-  const response = await fetch(image, { headers: { 'PRIVATE-TOKEN': account.token }, redirect: 'manual' });
+  const response = await fetch(image, { headers: { Authorization: `Bearer ${account.token}` }, redirect: 'manual' });
   if (response.status >= 300 && response.status < 400) throw createError({ statusCode: 502, statusMessage: 'GitLab redirected the image request' });
   if (!response.ok) throw createError({ statusCode: response.status, statusMessage: `GitLab could not load the image (${response.status})` });
   const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() || '';

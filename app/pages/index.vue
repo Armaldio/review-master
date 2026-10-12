@@ -368,9 +368,9 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
 
 <template>
   <main class="workspace">
-    <Head><Meta v-if="previewOpen && previewUrl" http-equiv="content-security-policy" :content="framePolicy" /></Head>
+    <Head><Title>MergePeek — GitLab merge request review</Title><Meta v-if="previewOpen && previewUrl" http-equiv="content-security-policy" :content="framePolicy" /></Head>
     <header class="topbar">
-      <a class="brand" href="#" @click.prevent="notice = 'Launch review-master with a GitLab merge request URL'">review<span>·</span>master</a>
+      <a class="brand" href="#" @click.prevent="notice = 'Launch mpeek with a GitLab merge request URL'">Merge<span>Peek</span></a>
       <template v-if="app.review.value">
         <div class="mr-heading"><strong>{{ app.review.value.mr.title }}</strong><span class="review-state">{{ reviewerState.replaceAll('_', ' ') }}</span><button class="quiet" @click="descriptionOpen = !descriptionOpen">{{ descriptionOpen ? 'Hide details' : 'Details' }}</button></div>
         <div class="top-actions">

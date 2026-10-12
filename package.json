@@ -1,11 +1,16 @@
 {
-  "name": "review-master",
-  "version": "3.0.0",
-  "description": "A focused GitLab merge request review tool",
+  "name": "@armaldio/mergepeek",
+  "version": "0.1.0",
+  "description": "A focused GitLab merge request reviewer",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Armaldio/review-master.git"
+  },
   "type": "module",
   "bin": {
-    "review-master": "bin/review-master.mjs"
+    "mpeek": "bin/mpeek.mjs",
+    "review-master": "bin/mpeek.mjs"
   },
   "files": [
     ".output",
