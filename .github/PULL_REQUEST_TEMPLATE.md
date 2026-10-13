@@ -1,4 +1,4 @@
-## Changeset
+## Changeset (required)
 
-- [ ] This changes user-visible package behavior and includes a `.changeset/*.md` release note.
-- [ ] This is documentation, tests, or CI-only and does not need a package release note.
+- [ ] Package behavior changed; this PR includes a versioned `.changeset/*.md` release note.
+- [ ] No package release is needed; this PR includes an empty changeset.

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const policy = fileURLToPath(new URL('../scripts/require-changeset.mjs', import.meta.url));
 
-test('requires a changeset for shipped code and accepts the release note', async t => {
+test('requires a changeset for every pull request and accepts an empty release note', async t => {
   const repo = await mkdtemp(join(tmpdir(), 'mergepeek-changeset-policy-'));
   t.after(() => rm(repo, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -26,10 +26,10 @@ test('requires a changeset for shipped code and accepts the release note', async
   let head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
   let result = spawnSync(process.execPath, [policy, base, head], { cwd: repo, encoding: 'utf8' });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /no Changesets release note/);
+  assert.match(result.stderr, /Every PR needs a Changesets file/);
 
   await mkdir(join(repo, '.changeset'));
-  await writeFile(join(repo, '.changeset', 'quiet-pandas-smile.md'), '---\n"@armaldio/mergepeek": patch\n---\nFix the reviewed-file action.\n');
+  await writeFile(join(repo, '.changeset', 'quiet-pandas-smile.md'), '---\n---\n');
   git('add', '.');
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'add changeset');
   head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
