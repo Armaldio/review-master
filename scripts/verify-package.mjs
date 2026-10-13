@@ -64,6 +64,7 @@ try {
   server.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
   server.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
   const exited = new Promise(resolveExit => server.once('exit', (code, signal) => resolveExit({ code, signal })));
+  let firstOrigin;
   try {
     const startupDeadline = Date.now() + 15_000;
     let response;
@@ -72,6 +73,7 @@ try {
       if (server.exitCode !== null) throw new Error(`Packaged CLI exited early (${server.exitCode}):\n${stdout}${stderr}`);
       endpoint = stdout.match(/at (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
       if (endpoint) {
+        firstOrigin ||= endpoint;
         try {
           response = await fetch(`${endpoint}/?mr=${encodeURIComponent(mrUrl)}`);
           if (response.ok) break;
@@ -98,7 +100,48 @@ try {
       await exited;
     }
   }
-  console.log(`Verified ${installed.name}@${installed.version}: usage, packed CLI, live Nitro response, clean shutdown`);
+
+  const restartedServer = spawn(command, [mrUrl], {
+    cwd: installDir,
+    env: { ...process.env, XDG_CONFIG_HOME: configHome },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let restartOutput = '';
+  let restartError = '';
+  restartedServer.stdout.setEncoding('utf8').on('data', chunk => { restartOutput += chunk; });
+  restartedServer.stderr.setEncoding('utf8').on('data', chunk => { restartError += chunk; });
+  const restartExit = new Promise(resolveExit => restartedServer.once('exit', (code, signal) => resolveExit({ code, signal })));
+  try {
+    const restartDeadline = Date.now() + 15_000;
+    let restartOrigin;
+    let response;
+    while (Date.now() < restartDeadline) {
+      if (restartedServer.exitCode !== null) throw new Error(`Packaged CLI failed on restart (${restartedServer.exitCode}):\n${restartOutput}${restartError}`);
+      restartOrigin = restartOutput.match(/at (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+      if (restartOrigin) {
+        try {
+          response = await fetch(`${restartOrigin}/?mr=${encodeURIComponent(mrUrl)}`);
+          if (response.ok) break;
+        } catch { /* Nitro has not started listening yet. */ }
+      }
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+    }
+    if (!response?.ok) throw new Error(`Packaged CLI did not restart:\n${restartOutput}${restartError}`);
+    if (restartOrigin !== firstOrigin) throw new Error(`Packaged CLI changed local origin after restart (${firstOrigin} → ${restartOrigin})`);
+    restartedServer.kill('SIGTERM');
+    let stopTimer;
+    const result = await Promise.race([restartExit, new Promise((_, reject) => {
+      stopTimer = setTimeout(() => reject(new Error('Restarted package did not stop after SIGTERM')), 5_000);
+    })]);
+    clearTimeout(stopTimer);
+    if (result.code !== 0) throw new Error(`Restarted package exited unexpectedly (${result.signal ?? result.code}):\n${restartError}`);
+  } finally {
+    if (restartedServer.exitCode === null && restartedServer.signalCode === null) {
+      restartedServer.kill('SIGKILL');
+      await restartExit;
+    }
+  }
+  console.log(`Verified ${installed.name}@${installed.version}: usage, packed CLI, live Nitro response, stable local origin across restart, clean shutdown`);
 } finally {
   await rm(installDir, { recursive: true, force: true });
 }

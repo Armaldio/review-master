@@ -9,7 +9,7 @@ import open from 'open';
 const dataDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'review-master');
 const accountsFile = join(dataDir, 'accounts.json');
 const args = process.argv.slice(2);
-const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>`);
+const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>\nLocal server port defaults to 4173; override with REVIEW_MASTER_PORT.`);
 const readSecret = () => new Promise((resolve, reject) => {
   if (!process.stdin.isTTY) return reject(new Error('Account setup requires an interactive terminal'));
   process.stdout.write('Personal access token: ');
@@ -71,9 +71,11 @@ try {
   const serverFile = new URL('../.output/server/index.mjs', import.meta.url);
   try { await readFile(serverFile); } catch { throw new Error('Production app is not built. Run npm run build first.'); }
   const server = createServer();
-  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  const port = address.port;
+  const port = Number(process.env.REVIEW_MASTER_PORT || 4173);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('REVIEW_MASTER_PORT must be an integer between 1 and 65535');
+  await new Promise((resolve, reject) => server.once('error', error => reject(error.code === 'EADDRINUSE'
+    ? new Error(`Local review port ${port} is already in use. Stop the other MergePeek instance or set REVIEW_MASTER_PORT.`)
+    : error)).listen(port, '127.0.0.1', resolve));
   await new Promise(resolve => server.close(resolve));
   process.env.NITRO_HOST = '127.0.0.1';
   process.env.NITRO_PORT = String(port);

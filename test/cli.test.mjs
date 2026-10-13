@@ -16,6 +16,7 @@ test('CLI --help prints usage and exits successfully', () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /mpeek <gitlab-mr-url>/);
+  assert.match(result.stdout, /port defaults to 4173; override with REVIEW_MASTER_PORT/);
 });
 
 test('published package exposes mpeek and retains the old command as an alias', async () => {

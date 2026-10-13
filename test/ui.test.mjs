@@ -7,14 +7,16 @@ import { chromium } from 'playwright-core';
 
 const root = new URL('../', import.meta.url).pathname;
 const patch = (file, oldValue, newValue) => `diff --git a/${file} b/${file}\nindex 1111111..2222222 100644\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-${oldValue}\n+${newValue}\n`;
-const mr = { id: 77, iid: 7, title: 'Keep review state stable', description: 'A mocked review.', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'feature', target_branch: 'main', sha: 'head1', source_project_id: 2, target_project_id: 2, author: { username: 'reviewer', name: 'Reviewer' } };
+const mr = { id: 77, iid: 7, title: 'Keep review state stable', description: 'A mocked review.\n\n![GitLab upload](https://gitlab.example/uploads/screenshot.png)\n\n![External image](https://attacker.invalid/track.png)', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'feature', target_branch: 'main', sha: 'head1', source_project_id: 2, target_project_id: 2, author: { username: 'reviewer', name: 'Reviewer' } };
 let currentMrSha = 'head1';
+let includeFullFile = false;
 let remoteDraftText = 'Remote GitLab draft';
 const data = () => ({
   mr: { ...mr, sha: currentMrSha }, user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2, path: 'group/app' },
   diffs: [
     { old_path: 'src/a.ts', new_path: 'src/a.ts', diff: patch('src/a.ts', 'const oldA = 1;', 'const newA = 2;'), new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-a' },
     { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: patch('src/b.ts', 'const oldB = 1;', 'const newB = 2;'), new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
+    ...(includeFullFile ? [{ old_path: 'src/full.ts', new_path: 'src/full.ts', diff: '', old_id: 'old-full', new_id: 'new-full', new_file: false, deleted_file: false, renamed_file: false, too_large: true, identity: 'blob-full' }] : []),
   ], discussions: [], draftNotes: [{ id: 31, note: remoteDraftText, position: null }, { id: 32, note: 'Delete this draft', position: null }],
   codeowners: [{ pattern: 'src/a.ts', owners: ['reviewer'] }, { pattern: 'src/b.ts', owners: ['other'] }], ownerStatus: { reviewer: true, other: false },
 });
@@ -76,6 +78,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   const errors = [];
   page.on('requestfailed', request => errors.push(`${request.url()}: ${request.failure()?.errorText}`));
   const apiCalls = [];
+  const externalImageRequests = [];
   let previewLoads = 0;
   let publishedDrafts = false;
   let publishCalls = 0;
@@ -83,6 +86,10 @@ test('review screen preserves preview navigation and local drafts while reviewin
   let failDraftDeleteOnce = true;
   const deletedDrafts = new Set();
   page.on('pageerror', error => errors.push(error.message));
+  await context.route('https://attacker.invalid/**', async route => {
+    externalImageRequests.push(route.request().url());
+    await route.fulfill({ status: 200, contentType: 'image/png', body: '' });
+  });
   await context.route('**/api/gitlab', async route => {
     const request = route.request().postDataJSON();
     apiCalls.push(request.action);
@@ -100,6 +107,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
       : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: [], draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
       : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa-feature', match: 'exact', stale: false }] }
       : request.action === 'comment' ? { id: 1 }
+      : request.action === 'files' ? { content: request.payload.ref === 'head-full' ? 'const value = 2;' : 'const value = 1;' }
       : request.action === 'delete-draft-note' || request.action === 'edit-draft-note' ? {}
       : request.action === 'publish-drafts' ? (publishCalls++, await new Promise(resolve => setTimeout(resolve, 150)), publishedDrafts = true, {})
       : request.action === 'open-preview' ? { url: request.payload.url }
@@ -120,6 +128,11 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).count(), 1);
   assert.equal(await page.getByText('Remote GitLab draft').count(), 1, 'GitLab drafts have a separate display');
   assert.equal(await page.locator('.file-row').count(), 1, 'Only my files filters by confirmed CODEOWNERS membership');
+  await page.getByRole('button', { name: 'Details' }).click();
+  assert.equal(externalImageRequests.length, 0, 'external Markdown images are removed before the browser can request them');
+  assert.equal(await page.locator('.description img').count(), 1, 'same-host GitLab upload images remain proxied');
+  assert.match(await page.locator('.description img').getAttribute('src'), /^\/api\/gitlab-image\?/);
+  await page.getByRole('button', { name: 'Hide details' }).click();
   await page.getByRole('checkbox', { name: 'Only my files' }).uncheck();
   assert.equal(await page.locator('.file-row').count(), 2, 'disabling the owner filter restores all files');
   await page.getByRole('checkbox', { name: 'Only my files' }).check();
@@ -203,6 +216,18 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.evaluate(() => window.__diffMutations), 0, 'discussion polling leaves unchanged diff DOM untouched');
   assert.equal(await page.evaluate(() => window.__diffRoot === document.querySelector('diffs-container')), true);
   assert.ok(apiCalls.includes('refresh'));
+  await page.getByLabel('Close preview').click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByLabel('Find a file').isVisible(), true, 'file search stays available on a narrow screen');
+  assert.equal(await page.locator('.file-path').first().isVisible(), true, 'file names remain visible in mobile navigation');
+  includeFullFile = true;
+  currentMrSha = 'head-full';
+  await page.getByRole('button', { name: '↻ Refresh' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 3);
+  await page.locator('.file-row').nth(2).click();
+  await page.getByRole('button', { name: 'Load full file' }).click();
+  await page.waitForFunction(() => !document.querySelector('.diff-warning'));
+  assert.equal(await page.locator('diffs-container').count(), 1, 'a successfully loaded full file replaces the collapsed-file prompt with its diff');
   assert.deepEqual(errors, [], 'browser console should have no page exceptions');
   await context.close();
 });

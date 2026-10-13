@@ -101,7 +101,18 @@ export async function gitlab<T>(url: string, token: string, init: RequestInit = 
   const response = await fetch(url, { ...init, redirect: 'manual', headers: { Authorization: `Bearer ${token}`, ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers } });
   if (response.status >= 300 && response.status < 400) throw createError({ statusCode: 502, statusMessage: 'GitLab redirected the API request; credentials were withheld' });
   if (!response.ok) {
-    throw createError({ statusCode: response.status === 429 ? 429 : response.status, statusMessage: `GitLab returned ${response.status}`, data: { retryAfter: response.headers.get('retry-after') } });
+    let stalePosition = false;
+    if (response.status === 400) {
+      try {
+        const body = await response.json() as { message?: unknown };
+        stalePosition = typeof body.message === 'string' && /position.{0,40}(?:outdated|stale)|(?:outdated|stale).{0,40}position/i.test(body.message);
+      } catch { /* Keep other upstream error details private. */ }
+    }
+    throw createError({
+      statusCode: response.status === 429 ? 429 : response.status,
+      statusMessage: stalePosition ? 'The comment position is out of date. Refresh the merge request and reselect the line.' : `GitLab returned ${response.status}`,
+      data: { retryAfter: response.headers.get('retry-after') },
+    });
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
