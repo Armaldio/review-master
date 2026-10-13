@@ -34,7 +34,11 @@ const normalizedHost = value => {
     throw new Error('Host must be an absolute HTTP(S) origin without credentials or a path');
   return url.origin;
 };
-const load = async () => { try { return JSON.parse(await readFile(accountsFile, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return []; throw e; } };
+const load = async () => {
+  let contents;
+  try { contents = await readFile(accountsFile, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+  try { return JSON.parse(contents); } catch { throw new Error(`Saved GitLab accounts file is invalid JSON: ${accountsFile}`); }
+};
 const save = async value => {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const temporary = `${accountsFile}.${process.pid}.tmp`;
