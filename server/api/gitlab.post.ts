@@ -1,4 +1,5 @@
 import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '../utils/gitlab.ts';
+import { logReviewActivity } from '../utils/review-activity.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
@@ -22,6 +23,7 @@ export default defineEventHandler(async event => {
         gitlabPages<any>(`${base}/discussions`, token),
         gitlabPages<any>(`${base}/draft_notes`, token),
       ]);
+      if (process.env.REVIEW_MASTER_CLI === '1') logReviewActivity(`${mr.host}/${mr.projectPath}/${mr.iid}`, info, discussions);
       const owners = await loadCodeowners(project, info.target_branch, token);
       const ownership = await verifyOwners(owners.rules, user, projectInfo, token, mr.host);
       const heads = await mapLimit(diffs, 6, async file => {
@@ -41,6 +43,7 @@ export default defineEventHandler(async event => {
     }
     case 'refresh': {
       const [info, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
+      if (process.env.REVIEW_MASTER_CLI === '1') logReviewActivity(`${mr.host}/${mr.projectPath}/${mr.iid}`, info, discussions);
       return { mr: info, discussions, draftNotes };
     }
     case 'preview': {

@@ -20,14 +20,24 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const requests = [];
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
+  let currentSha = 'head';
+  let currentDiscussions = [];
+  let cliLogs = '';
+  const originalWrite = process.stdout.write;
+  process.stdout.write = function (chunk) {
+    cliLogs += String(chunk);
+    return true;
+  };
+  process.env.REVIEW_MASTER_CLI = '1';
+  t.after(() => { process.stdout.write = originalWrite; delete process.env.REVIEW_MASTER_CLI; });
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     requests.push({ path: url.pathname, method: init.method || 'GET', body: init.body && JSON.parse(init.body) });
-    const payload = url.pathname.endsWith('/merge_requests/7') ? { id: 77, iid: 7, title: 'Draft MR', draft: true, sha: 'head', diff_refs: {} }
+    const payload = url.pathname.endsWith('/merge_requests/7') ? { id: 77, iid: 7, title: 'Draft MR', draft: true, sha: currentSha, diff_refs: {} }
       : url.pathname.endsWith('/api/v4/user') ? { id: 5, username: 'reviewer', name: 'Reviewer' }
       : url.pathname.endsWith('/api/v4/projects/group%2Fapp') ? { id: 2, path_with_namespace: 'group/app', namespace: {} }
       : url.pathname.endsWith('/diffs') ? [{ old_path: 'a.ts', new_path: 'a.ts', diff: '', new_file: false, deleted_file: false, renamed_file: false }]
-      : url.pathname.endsWith('/discussions') ? []
+      : url.pathname.endsWith('/discussions') ? currentDiscussions
       : url.pathname.includes('/draft_notes') && !url.pathname.endsWith('/bulk_publish') ? [draft]
       : null;
     if (url.pathname.includes('/repository/files/')) return new Response('', { status: 404 });
@@ -45,6 +55,14 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   assert.deepEqual(loaded.draftNotes.map(item => item.id), [31]);
   const refreshed = await call('refresh');
   assert.deepEqual(refreshed.draftNotes.map(item => item.id), [31]);
+  assert.equal(cliLogs, '', 'initial load and unchanged refresh do not announce existing activity');
+  currentSha = '12345678abcdef';
+  currentDiscussions = [{ notes: [{ id: 41, body: 'private comment' }] }];
+  await call('refresh');
+  assert.equal(cliLogs, 'MergePeek: new commit 12345678\nMergePeek: 1 new comment\n');
+  await call('refresh');
+  assert.equal(cliLogs, 'MergePeek: new commit 12345678\nMergePeek: 1 new comment\n', 'unchanged polling does not repeat logs');
+  assert.ok(!cliLogs.includes('private comment'));
   await call('ready');
   await call('approve');
   await call('unapprove');

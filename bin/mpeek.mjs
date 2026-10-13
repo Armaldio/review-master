@@ -81,6 +81,7 @@ try {
   process.env.NITRO_PORT = String(port);
   process.env.REVIEW_MASTER_URL = mr.toString();
   process.env.REVIEW_MASTER_CONFIG = accountsFile;
+  process.env.REVIEW_MASTER_CLI = '1';
   const shutdown = () => { process.exit(0); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
   console.log(`MergePeek reviewing ${mr.toString()} at http://127.0.0.1:${port}`);
