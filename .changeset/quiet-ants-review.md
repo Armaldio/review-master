@@ -2,4 +2,4 @@
 "@armaldio/mergepeek": patch
 ---
 
-Log newly detected commits and comments in the CLI.
+Log newly detected commits, comments, and merge request completion in the CLI.
