@@ -43,7 +43,7 @@ npm run benchmark:browser
 
 ## npm releases
 
-Every pull request that changes shipped code needs a Changesets file under `.changeset/`; the PR check enforces it, and `AGENTS.md` tells contributors and coding agents how to add one. Run `npm run changeset` and choose the appropriate `patch`, `minor`, or `major` bump with a user-facing summary. Documentation-only, test-only, and CI/release-only changes do not need a release note.
+Every pull request that changes shipped code needs a Changesets file under `.changeset/`; the `changeset-check` required status on `master` enforces it, and `AGENTS.md` tells contributors and coding agents how to add one. Run `npm run changeset` and choose the appropriate `patch`, `minor`, or `major` bump with a user-facing summary. Documentation-only, test-only, and CI/release-only changes do not need a release note.
 
 The single `.github/workflows/publish-npm.yml` workflow handles the release lifecycle on `master`: after a merge with pending changesets, it verifies the build and asks Changesets to create or update a `Version Packages` PR. Merging that version PR triggers the same workflow again; it reruns verification and publishes the new version to npm with GitHub Actions OIDC Trusted Publishing. Existing versions are never republished. There is no npm token secret. In GitHub Actions settings, allow Actions to create pull requests; keep the npm Trusted Publisher configured for GitHub owner `Armaldio`, repository `review-master`, and workflow `publish-npm.yml`.
 
