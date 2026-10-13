@@ -1,6 +1,6 @@
 {
   "name": "@armaldio/mergepeek",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "A focused GitLab merge request reviewer",
   "license": "MIT",
   "repository": {
