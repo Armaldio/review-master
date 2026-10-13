@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { useReview } from '~/composables/useReview';
+import { codeownersForPath } from '#shared/codeowners';
 
 const app = useReview();
 const PierreDiff = defineAsyncComponent(() => import('~/components/PierreDiff.vue'));
@@ -32,6 +33,7 @@ const commentBusy = ref(false);
 const draftNotesBusy = ref(false);
 const replyBusy = ref(false);
 const mrActionBusy = ref(false);
+const actionMenu = ref<HTMLDetailsElement>();
 const editingDraftNote = ref('');
 const draftNoteText = ref('');
 const summaryOpen = ref(false);
@@ -41,7 +43,16 @@ const replyTo = ref('');
 const replyText = ref('');
 const editingNote = ref('');
 const editText = ref('');
-const reactions = ['thumbsup', 'thumbsdown', 'laugh', 'heart', 'rocket', 'eyes', 'tada', 'white_check_mark'];
+const reactions = [
+  { name: 'thumbsup', emoji: '👍', label: 'thumbs up' },
+  { name: 'thumbsdown', emoji: '👎', label: 'thumbs down' },
+  { name: 'laugh', emoji: '😆', label: 'laugh' },
+  { name: 'heart', emoji: '❤️', label: 'heart' },
+  { name: 'rocket', emoji: '🚀', label: 'rocket' },
+  { name: 'eyes', emoji: '👀', label: 'eyes' },
+  { name: 'tada', emoji: '🎉', label: 'celebrate' },
+  { name: 'white_check_mark', emoji: '✅', label: 'check mark' },
+];
 const notice = ref('');
 const currentMr = ref('');
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -50,31 +61,12 @@ const fileName = (file: any) => file?.new_file ? file.new_path : file?.deleted_f
 const ownerRules = computed(() => app.review.value?.codeowners || []);
 function matchOwner(filePath: string) {
   if (!app.review.value || app.review.value.ownerWarning) return null;
-  const matching = ownerRules.value.filter((rule: any) => globMatches(rule.pattern, filePath));
-  if (!matching.length) return ownerRules.value.length ? false : null;
-  const bySection = new Map<string, any>();
-  for (const rule of matching) bySection.set(rule.section || '', rule);
-  const owners = [...bySection.values()].flatMap((rule: any) => rule.owners as string[]);
+  const matched = codeownersForPath(ownerRules.value, filePath);
+  if (!matched.matched) return ownerRules.value.length ? false : null;
+  if (!matched.owners.length) return false;
   const status = app.review.value.ownerStatus || {};
-  if (owners.some(owner => status[owner] === null || status[owner] === undefined)) return null;
-  return owners.some(owner => status[owner] === true);
-}
-function globMatches(pattern: string, path: string) {
-  if (!pattern || pattern.startsWith('!')) return false;
-  const anchored = pattern.startsWith('/');
-  const directory = pattern.endsWith('/');
-  const normalized = pattern.replace(/^\//, '').replace(/\/$/, '');
-  let re = '';
-  for (let i = 0; i < normalized.length; i++) {
-    if (normalized[i] === '*' && normalized[i + 1] === '*') {
-      i++;
-      if (normalized[i + 1] === '/') { i++; re += '(?:.*/)?'; } else re += '.*';
-    } else if (normalized[i] === '*') re += '[^/]*';
-    else if (normalized[i] === '?') re += '[^/]';
-    else re += normalized[i]!.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
-  }
-  if (!anchored && !normalized.includes('/')) re = `(?:^|.*/)${re}`;
-  return new RegExp(`^${re}${directory ? '(?:/.*)?' : ''}$`).test(path);
+  if (matched.owners.some(owner => status[owner] === null || status[owner] === undefined)) return null;
+  return matched.owners.some(owner => status[owner] === true);
 }
 const eligibleFiles = computed(() => app.files.value.filter(file => {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) return false;
@@ -306,6 +298,10 @@ function toggleTheme() {
   document.documentElement.dataset.theme = theme.value;
   localStorage.setItem('review-master-theme', theme.value);
 }
+
+function closeActionMenu() {
+  if (actionMenu.value) actionMenu.value.open = false;
+}
 function startPreviewResize() {
   const onMove = (move: PointerEvent) => { previewWidth.value = Math.max(320, Math.min(window.innerWidth * .7, window.innerWidth - move.clientX)); };
   const onUp = () => {
@@ -379,9 +375,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
           <button class="quiet" @click="showSummary('summary')">Summary</button>
           <button class="quiet" @click="showSummary('changes')">Request changes</button>
-          <button class="quiet" :disabled="mrActionBusy" @click="mrAction('unapprove')">Unapprove</button>
-          <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="publishDraftNotes">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
-          <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="mrAction('ready')">Mark ready</button>
+          <details ref="actionMenu" class="action-menu">
+            <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
+            <div class="action-menu-popover">
+              <button class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('unapprove')">Unapprove</button>
+              <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeActionMenu(); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
+              <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('ready')">Mark ready</button>
+            </div>
+          </details>
           <button class="approve" :disabled="mrActionBusy" @click="mrAction('approve')">Approve</button>
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
@@ -400,7 +401,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
         <label class="filter-toggle"><input v-model="onlyMine" type="checkbox"> Only my files</label>
         <div v-if="app.review.value.ownerWarning" class="owner-warning">{{ app.review.value.ownerWarning }}</div>
-        <div v-else-if="hasUnknownOwner" class="owner-warning">Some owners could not be verified. Showing all files.</div>
+        <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay visible.</div>
         <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
         <nav class="file-list" aria-label="Changed files">
           <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
@@ -422,12 +423,12 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="file.new_path + file.identity" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">Comment on file</button></header>
-                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :mode="mode" :wrap="wrap" :continuous="true" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path + activeFile.identity" :diff="activeFile.diff" :path="fileName(activeFile)" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path + activeFile.identity" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>
@@ -453,7 +454,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
               <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
               <!-- eslint-disable-next-line vue/no-v-html -->
-              <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="emoji in reactions" :key="emoji" class="reaction" :aria-label="`React with ${emoji}`" @click="toggleReaction(note, emoji)">{{ (note.award_emoji || []).filter((award: any) => award.name === emoji).length ? `${emoji} ${(note.award_emoji || []).filter((award: any) => award.name === emoji).length}` : emoji }}</button></div></article>
+              <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="reaction in reactions" :key="reaction.name" class="reaction" :aria-label="`React with ${reaction.label}`" @click="toggleReaction(note, reaction.name)">{{ (note.award_emoji || []).filter((award: any) => award.name === reaction.name).length ? `${reaction.emoji} ${(note.award_emoji || []).filter((award: any) => award.name === reaction.name).length}` : reaction.emoji }}</button></div></article>
               <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
               <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
             </details>

@@ -9,7 +9,7 @@ import open from 'open';
 const dataDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'review-master');
 const accountsFile = join(dataDir, 'accounts.json');
 const args = process.argv.slice(2);
-const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>\nLocal server port defaults to 4173; override with REVIEW_MASTER_PORT.`);
+const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>\nLocal server binds to 127.0.0.1:4173 by default; override with REVIEW_MASTER_HOST and REVIEW_MASTER_PORT. Non-local hosts must be listed in REVIEW_MASTER_ALLOWED_HOSTS.`);
 const readSecret = () => new Promise((resolve, reject) => {
   if (!process.stdin.isTTY) return reject(new Error('Account setup requires an interactive terminal'));
   process.stdout.write('Personal access token: ');
@@ -34,7 +34,11 @@ const normalizedHost = value => {
     throw new Error('Host must be an absolute HTTP(S) origin without credentials or a path');
   return url.origin;
 };
-const load = async () => { try { return JSON.parse(await readFile(accountsFile, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return []; throw e; } };
+const load = async () => {
+  let contents;
+  try { contents = await readFile(accountsFile, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+  try { return JSON.parse(contents); } catch { throw new Error(`Saved GitLab accounts file is invalid JSON: ${accountsFile}`); }
+};
 const save = async value => {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const temporary = `${accountsFile}.${process.pid}.tmp`;
@@ -71,22 +75,23 @@ try {
   const serverFile = new URL('../.output/server/index.mjs', import.meta.url);
   try { await readFile(serverFile); } catch { throw new Error('Production app is not built. Run npm run build first.'); }
   const server = createServer();
+  const host = process.env.REVIEW_MASTER_HOST || '127.0.0.1';
   const port = Number(process.env.REVIEW_MASTER_PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('REVIEW_MASTER_PORT must be an integer between 1 and 65535');
   await new Promise((resolve, reject) => server.once('error', error => reject(error.code === 'EADDRINUSE'
     ? new Error(`Local review port ${port} is already in use. Stop the other MergePeek instance or set REVIEW_MASTER_PORT.`)
-    : error)).listen(port, '127.0.0.1', resolve));
+    : error)).listen(port, host, resolve));
   await new Promise(resolve => server.close(resolve));
-  process.env.NITRO_HOST = '127.0.0.1';
+  process.env.NITRO_HOST = host;
   process.env.NITRO_PORT = String(port);
   process.env.REVIEW_MASTER_URL = mr.toString();
   process.env.REVIEW_MASTER_CONFIG = accountsFile;
   process.env.REVIEW_MASTER_CLI = '1';
   const shutdown = () => { process.exit(0); };
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
-  console.log(`MergePeek reviewing ${mr.toString()} at http://127.0.0.1:${port}`);
+  console.log(`MergePeek reviewing ${mr.toString()} at http://${host}:${port}`);
   await import(serverFile.href);
-  const url = `http://127.0.0.1:${port}/?mr=${encodeURIComponent(mr.toString())}`;
+  const url = `http://${host}:${port}/?mr=${encodeURIComponent(mr.toString())}`;
   let ready = false;
   for (let attempt = 0; attempt < 50; attempt++) {
     try { const response = await fetch(url); if (response.ok) { ready = true; break; } } catch { /* listener is still starting */ }

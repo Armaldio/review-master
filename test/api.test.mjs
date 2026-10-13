@@ -10,6 +10,33 @@ globalThis.readBody = event => event.body;
 globalThis.getRequestHeader = (event, name) => event.headers?.[name];
 const handler = (await import('../server/api/gitlab.post.ts')).default;
 
+test('allows an explicitly trusted host but still rejects cross-origin requests', async t => {
+  const originalFetch = globalThis.fetch;
+  const directory = await mkdtemp(join(tmpdir(), 'mergepeek-host-'));
+  const config = join(directory, 'accounts.json');
+  await writeFile(config, JSON.stringify([{ host: 'https://gitlab.example', token: 'test-token', username: 'reviewer' }]), { mode: 0o600 });
+  const previous = {
+    config: process.env.REVIEW_MASTER_CONFIG,
+    allowed: process.env.REVIEW_MASTER_ALLOWED_HOSTS,
+  };
+  process.env.REVIEW_MASTER_CONFIG = config;
+  process.env.REVIEW_MASTER_ALLOWED_HOSTS = '100.111.167.123';
+  globalThis.fetch = async () => new Response(JSON.stringify({ id: 5, username: 'reviewer' }), { status: 200 });
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    previous.config === undefined ? delete process.env.REVIEW_MASTER_CONFIG : process.env.REVIEW_MASTER_CONFIG = previous.config;
+    previous.allowed === undefined ? delete process.env.REVIEW_MASTER_ALLOWED_HOSTS : process.env.REVIEW_MASTER_ALLOWED_HOSTS = previous.allowed;
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const event = origin => ({
+    headers: { host: '100.111.167.123:4173', origin },
+    body: { mrUrl: 'https://gitlab.example/group/app/-/merge_requests/7', action: 'invalid' },
+  });
+  await assert.rejects(handler(event('http://100.111.167.123:4173')), error => error.statusCode === 400 && error.statusMessage === 'Unknown GitLab action');
+  await assert.rejects(handler(event('http://other.example')), error => error.statusCode === 403 && error.statusMessage === 'Cross-origin request rejected');
+});
+
 test('loads and refreshes draft notes and uses GitLab-supported MR and draft-note operations', async t => {
   const originalFetch = globalThis.fetch;
   const directory = await mkdtemp(join(tmpdir(), 'review-master-api-'));
@@ -20,6 +47,7 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const requests = [];
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
+  const codeownersFile = '[Maintainers] @reviewer\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
   let currentSha = 'head';
   let currentDiscussions = [];
   let cliLogs = '';
@@ -40,7 +68,10 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
       : url.pathname.endsWith('/discussions') ? currentDiscussions
       : url.pathname.includes('/draft_notes') && !url.pathname.endsWith('/bulk_publish') ? [draft]
       : null;
-    if (url.pathname.includes('/repository/files/')) return new Response('', { status: 404 });
+    if (url.pathname.includes('/repository/files/')) {
+      if (url.pathname.includes('.gitlab%2FCODEOWNERS')) return new Response(codeownersFile);
+      return new Response('', { status: 404 });
+    }
     if (url.pathname.includes('/draft_notes/') && ['PUT', 'DELETE', 'POST'].includes(init.method)) return new Response('{}', { status: 200 });
     if (url.pathname.endsWith('/approve') || url.pathname.endsWith('/unapprove') || url.pathname.endsWith('/notes')) return new Response('{}', { status: 200 });
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -53,6 +84,9 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const loaded = await call('bootstrap');
   assert.deepEqual(loaded.draftNotes.map(item => item.id), [31]);
+  assert.equal(loaded.ownerWarning, undefined, 'a wildcard fallback and exclusions in a real GitLab CODEOWNERS file do not disable ownership parsing');
+  assert.ok(loaded.codeowners.some(rule => rule.exclude && rule.pattern === 'docs/private/**'));
+  assert.ok(!requests.some(request => request.path.includes('/groups/unused%2Fgroup/members')), 'only owners that apply to changed paths are checked');
   const refreshed = await call('refresh');
   assert.deepEqual(refreshed.draftNotes.map(item => item.id), [31]);
   assert.equal(cliLogs, '', 'initial load and unchanged refresh do not announce existing activity');

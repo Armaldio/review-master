@@ -16,7 +16,7 @@ function getWorkerPool() {
   return workerPool;
 }
 
-const props = defineProps<{ diff: string; path: string; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null } }>();
+const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null } }>();
 const emit = defineEmits<{
   (event: 'lineSelected', line: { lineNumber: number; side: 'new' | 'old' }): void;
   (event: 'lineRange', range: SelectedLineRange): void;
@@ -51,10 +51,19 @@ function render() {
     parsedDiff = props.diff;
     parsedPath = props.path;
     parsedFullFiles = props.fullFiles;
+    const oldPath = props.oldPath || props.path;
+    const patchHeader = [
+      `diff --git a/${oldPath} b/${props.path}`,
+      ...(props.newFile ? ['new file mode 100644'] : []),
+      ...(props.deletedFile ? ['deleted file mode 100644'] : []),
+      `--- ${props.newFile ? '/dev/null' : `a/${oldPath}`}`,
+      `+++ ${props.deletedFile ? '/dev/null' : `b/${props.path}`}`,
+      '',
+    ].join('\n');
     metadata = props.fullFiles ? parseDiffFromFile(
       { name: props.path, contents: props.fullFiles.oldContent || '' },
       { name: props.path, contents: props.fullFiles.newContent || '' },
-    ) : parsePatchFiles(props.diff)[0]?.files[0];
+    ) : parsePatchFiles(patchHeader + props.diff)[0]?.files[0];
     contentLines = props.fullFiles
       ? (props.fullFiles.oldContent?.split('\n').length || 0) + (props.fullFiles.newContent?.split('\n').length || 0)
       : props.diff.split('\n').length;
@@ -62,7 +71,21 @@ function render() {
   // Tokenizing every line of a pathological diff adds work after its rows are usable.
   // Pierre keeps the diff interactive and renders plain text beyond this limit.
   options.tokenizeMaxLength = contentLines > 10_000 ? 10_000 : undefined;
-  if (!metadata) return;
+  if (!metadata) {
+    view?.cleanUp();
+    virtualizer?.cleanUp();
+    view = null;
+    virtualizer = null;
+    fileContainer = null;
+    viewKind = null;
+    target.value.replaceChildren();
+    const fallback = document.createElement('pre');
+    fallback.className = 'raw-diff';
+    fallback.textContent = props.diff || 'Pierre could not parse this GitLab diff.';
+    target.value.appendChild(fallback);
+    target.value.classList.remove('code-view');
+    return;
+  }
   const shouldVirtualize = contentLines > 2_000;
   const nextViewKind = shouldVirtualize && !props.continuous && !props.fullFiles ? 'code' : 'simple';
   target.value.classList.toggle('code-view', nextViewKind === 'code');
