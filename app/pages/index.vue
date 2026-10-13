@@ -76,8 +76,27 @@ const eligibleFiles = computed(() => app.files.value.filter(file => {
 const activeFile = computed(() => app.selected.value);
 const displayedFiles = computed(() => eligibleFiles.value);
 const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFiles.value[fileName(activeFile.value)]));
+const lineCountCache = new WeakMap<object, number>();
+function changedLineCount(file: any) {
+  let count = lineCountCache.get(file);
+  if (count === undefined) {
+    count = (file.diff.match(/^(?:\+(?!\+)|-(?!--))/gm) || []).length;
+    lineCountCache.set(file, count);
+  }
+  return count;
+}
 const reviewedCount = computed(() => app.files.value.filter(file => app.reviewed.value[fileName(file)] === file.identity && file.identity).length);
-const progress = computed(() => app.files.value.length ? Math.round(reviewedCount.value * 100 / app.files.value.length) : 0);
+const progressSegments = computed(() => app.files.value.map(file => ({
+  path: fileName(file),
+  changedLines: changedLineCount(file),
+  weight: Math.max(1, changedLineCount(file)),
+  reviewed: isReviewed(file),
+})));
+const totalProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + segment.weight, 0));
+const reviewedProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.weight : 0), 0));
+const totalChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + segment.changedLines, 0));
+const reviewedChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.changedLines : 0), 0));
+const progress = computed(() => totalProgressWeight.value ? Math.round(reviewedProgressWeight.value * 100 / totalProgressWeight.value) : 0);
 const discussionList = computed(() => app.review.value?.discussions || []);
 const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
@@ -370,14 +389,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
       <template v-if="app.review.value">
         <div class="mr-heading"><strong>{{ app.review.value.mr.title }}</strong><span class="review-state">{{ reviewerState.replaceAll('_', ' ') }}</span><button class="quiet" @click="descriptionOpen = !descriptionOpen">{{ descriptionOpen ? 'Hide details' : 'Details' }}</button></div>
         <div class="top-actions">
-          <span class="progress-label">{{ reviewedCount }}/{{ app.files.value.length }} reviewed</span>
+          <span class="progress-label" :title="`${reviewedCount} of ${app.files.value.length} files reviewed; progress is weighted by returned diff lines, with unavailable diffs counted as one segment`">{{ reviewedCount }}/{{ app.files.value.length }} · {{ progress }}%</span>
           <button class="quiet" :disabled="app.busy.value" @click="refreshReview(true)">↻ Refresh</button>
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
-          <button class="quiet" @click="showSummary('summary')">Summary</button>
-          <button class="quiet" @click="showSummary('changes')">Request changes</button>
           <details ref="actionMenu" class="action-menu">
             <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
             <div class="action-menu-popover">
+              <button class="quiet" @click="closeActionMenu(); showSummary('summary')">Summary</button>
+              <button class="quiet" @click="closeActionMenu(); showSummary('changes')">Request changes</button>
               <button class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('unapprove')">Unapprove</button>
               <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeActionMenu(); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
               <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('ready')">Mark ready</button>
@@ -387,7 +406,9 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
         </div>
-        <div class="progress-track"><span :style="{ width: `${progress}%` }" /></div>
+        <div class="progress-track" role="progressbar" aria-label="Review progress weighted by diff size" :aria-valuemin="0" :aria-valuemax="100" :aria-valuenow="progress" :aria-valuetext="`${reviewedCount} of ${app.files.value.length} files reviewed; ${reviewedChangedLines} of ${totalChangedLines} returned changed lines reviewed`">
+          <span v-for="segment in progressSegments" :key="segment.path" class="progress-segment" :class="{ reviewed: segment.reviewed }" :style="{ flexGrow: segment.weight }" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" />
+        </div>
       </template>
       <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL"><button class="approve">Open review</button></form>
     </header>
@@ -416,7 +437,27 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <template v-else-if="activeFile">
           <div class="file-toolbar">
             <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-            <div class="file-actions"><button class="quiet" @click="navigate(-1)">← Previous</button><button class="quiet" @click="navigate(1)">Next unreviewed →</button><button class="quiet" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button><label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label><span class="toolbar-rule"/><button class="quiet" :class="{ chosen: mode === 'split' }" @click="mode = 'split'">Split</button><button class="quiet" :class="{ chosen: mode === 'unified' }" @click="mode = 'unified'">Unified</button><label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap</label><label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous</label></div>
+            <div class="file-actions">
+              <div class="review-actions">
+                <button class="quiet previous-file" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
+                <button class="quiet" aria-label="Next unreviewed file" @click="navigate(1)">Next unreviewed →</button>
+                <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
+                <label class="wrap-toggle auto-advance"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
+              </div>
+              <div class="view-actions">
+                <div class="segmented-control" role="group" aria-label="Diff layout">
+                  <button :aria-pressed="mode === 'split'" @click="mode = 'split'">Split</button>
+                  <button :aria-pressed="mode === 'unified'" @click="mode = 'unified'">Unified</button>
+                </div>
+                <details class="display-menu">
+                  <summary class="quiet">View</summary>
+                  <div class="display-popover">
+                    <label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap lines</label>
+                    <label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous files</label>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
           <div v-if="(activeFile.collapsed || activeFile.too_large) && !expandedFiles[fileName(activeFile)]" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
           <div class="diff-scroll">

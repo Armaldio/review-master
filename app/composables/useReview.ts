@@ -14,7 +14,7 @@ export function useReview() {
   const backoffMs = ref(90_000);
   const drafts = ref<Record<string, string>>({});
   const reviewed = ref<Record<string, string>>({});
-  const autoAdvance = ref(false);
+  const autoAdvance = ref(true);
   const files = computed(() => review.value?.diffs ?? []);
   const selected = computed(() => files.value.find(file => (file.new_file ? file.new_path : file.deleted_file ? file.old_path : file.new_path) === selectedPath.value) ?? files.value[0] ?? null);
   const storageKey = computed(() => {
@@ -27,7 +27,7 @@ export function useReview() {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey.value) || '{}');
       drafts.value = value.drafts && typeof value.drafts === 'object' ? value.drafts : {};
-      autoAdvance.value = value.autoAdvance === true;
+      autoAdvance.value = typeof value.autoAdvance === 'boolean' ? value.autoAdvance : true;
       const old = value.reviewed || {};
       reviewed.value = Object.fromEntries(Object.entries(old).filter(([path, sha]) => typeof sha === 'string' && files.value.some(file => (file.deleted_file ? file.old_path : file.new_path) === path && file.identity && file.identity === sha))) as Record<string, string>;
     } catch { drafts.value = {}; reviewed.value = {}; error.value = 'Local review state could not be loaded from browser storage.'; }
