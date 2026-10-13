@@ -190,7 +190,7 @@ async function verifyOwners(owners: string[], user: any, project: any, token: st
   const roleLevel = project.permissions?.project_access?.access_level || project.permissions?.group_access?.access_level || 0;
   const results = await mapLimit([...new Set(owners)], 4, async owner => {
     const normalized = owner.replace(/^@/, '').toLowerCase();
-    if (!owner.startsWith('@')) return [owner, user.email?.toLowerCase() === normalized ? true : null] as const;
+    if (!owner.startsWith('@')) return [owner, user.email ? user.email.toLowerCase() === normalized : null] as const;
     const groupRole = owner.match(/^@(.+)%([a-z]+)$/i);
     if (owner.startsWith('@@')) {
       const role = owner.slice(2).toLowerCase();
@@ -201,9 +201,11 @@ async function verifyOwners(owners: string[], user: any, project: any, token: st
     const requiredLevel = groupRole ? roles[groupRole[2]!.toLowerCase()] : 0;
     if (groupRole && !requiredLevel) return [owner, null] as const;
     try {
-      const members = await gitlab<any[]>(`${host}/api/v4/groups/${encodeURIComponent(groupPath)}/members?query=${encodeURIComponent(user.username)}&per_page=100`, token);
-      const member = members.find(item => String(item.id) === String(user.id));
-      return [owner, member ? member.access_level >= (requiredLevel || 0) : false] as const;
+      const response = await fetch(`${host}/api/v4/groups/${encodeURIComponent(groupPath)}/members/all/${encodeURIComponent(String(user.id))}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
+      if (response.status === 404) return [owner, false] as const;
+      if (!response.ok) return [owner, null] as const;
+      const member = await response.json() as { access_level?: number };
+      return [owner, typeof member.access_level === 'number' ? member.access_level >= (requiredLevel || 0) : null] as const;
     } catch { return [owner, null] as const; }
   });
   const status: Record<string, boolean | null> = {};

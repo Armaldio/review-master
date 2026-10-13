@@ -47,7 +47,7 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const requests = [];
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
-  const codeownersFile = '[Maintainers] @reviewer\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
+  const codeownersFile = '[Maintainers] @reviewer another@example.com @nested/team @missing-group\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
   let currentSha = 'head';
   let currentDiscussions = [];
   let cliLogs = '';
@@ -61,8 +61,10 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     requests.push({ path: url.pathname, method: init.method || 'GET', body: init.body && JSON.parse(init.body) });
+    if (url.pathname.endsWith('/groups/nested%2Fteam/members/all/5')) return new Response(JSON.stringify({ id: 5, access_level: 30 }), { status: 200 });
+    if (url.pathname.endsWith('/groups/missing-group/members/all/5')) return new Response('', { status: 404 });
     const payload = url.pathname.endsWith('/merge_requests/7') ? { id: 77, iid: 7, title: 'Draft MR', draft: true, sha: currentSha, diff_refs: {} }
-      : url.pathname.endsWith('/api/v4/user') ? { id: 5, username: 'reviewer', name: 'Reviewer' }
+      : url.pathname.endsWith('/api/v4/user') ? { id: 5, username: 'reviewer', name: 'Reviewer', email: 'reviewer@example.com' }
       : url.pathname.endsWith('/api/v4/projects/group%2Fapp') ? { id: 2, path_with_namespace: 'group/app', namespace: {} }
       : url.pathname.endsWith('/diffs') ? [{ old_path: 'a.ts', new_path: 'a.ts', diff: '', new_file: false, deleted_file: false, renamed_file: false }]
       : url.pathname.endsWith('/discussions') ? currentDiscussions
@@ -86,7 +88,13 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   assert.deepEqual(loaded.draftNotes.map(item => item.id), [31]);
   assert.equal(loaded.ownerWarning, undefined, 'a wildcard fallback and exclusions in a real GitLab CODEOWNERS file do not disable ownership parsing');
   assert.ok(loaded.codeowners.some(rule => rule.exclude && rule.pattern === 'docs/private/**'));
-  assert.ok(!requests.some(request => request.path.includes('/groups/unused%2Fgroup/members')), 'only owners that apply to changed paths are checked');
+  assert.equal(loaded.ownerStatus['@reviewer'], true);
+  assert.equal(loaded.ownerStatus['another@example.com'], false, 'another email owner is not an unverifiable match');
+  assert.equal(loaded.ownerStatus['@nested/team'], true, 'inherited group membership is checked by user ID');
+  assert.equal(loaded.ownerStatus['@missing-group'], false, 'a 404 membership response means the reviewer is not an owner');
+  assert.ok(Object.values(loaded.ownerStatus).every(status => status !== null), 'known non-matches do not trigger an unknown-owner warning');
+  assert.ok(requests.some(request => request.path.endsWith('/groups/nested%2Fteam/members/all/5')));
+  assert.ok(!requests.some(request => request.path.includes('/groups/unused%2Fgroup/members/all/5')), 'only owners that apply to changed paths are checked');
   const refreshed = await call('refresh');
   assert.deepEqual(refreshed.draftNotes.map(item => item.id), [31]);
   assert.equal(cliLogs, '', 'initial load and unchanged refresh do not announce existing activity');

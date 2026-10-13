@@ -77,21 +77,19 @@ const activeFile = computed(() => app.selected.value);
 const displayedFiles = computed(() => eligibleFiles.value);
 const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFiles.value[fileName(activeFile.value)]));
 const lineCountCache = new WeakMap<object, number>();
-function changedLineCount(file: any) {
-  let count = lineCountCache.get(file);
-  if (count === undefined) {
-    count = (file.diff.match(/^(?:\+(?!\+)|-(?!--))/gm) || []).length;
-    lineCountCache.set(file, count);
-  }
+function changedLineCount(file: any): number {
+  const cached = lineCountCache.get(file);
+  if (cached !== undefined) return cached;
+  const count = (file.diff.match(/^(?:\+(?!\+)|-(?!--))/gm) || []).length;
+  lineCountCache.set(file, count);
   return count;
 }
 const reviewedCount = computed(() => app.files.value.filter(file => app.reviewed.value[fileName(file)] === file.identity && file.identity).length);
-const progressSegments = computed(() => app.files.value.map(file => ({
-  path: fileName(file),
-  changedLines: changedLineCount(file),
-  weight: Math.max(1, changedLineCount(file)),
-  reviewed: isReviewed(file),
-})));
+const progressSegments = computed(() => app.files.value.map(file => {
+  const path = fileName(file);
+  const changedLines = changedLineCount(file);
+  return { file, path, changedLines, weight: Math.max(1, changedLines), reviewed: isReviewed(file) };
+}));
 const totalProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + segment.weight, 0));
 const reviewedProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.weight : 0), 0));
 const totalChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + segment.changedLines, 0));
@@ -135,6 +133,13 @@ function setFile(file: any) {
     document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
     document.querySelector('.diff-shell.code-view')?.scrollTo({ top: 0 });
   }
+}
+function openProgressSegment(file: any) {
+  if (!eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) {
+    onlyMine.value = false;
+    query.value = '';
+  }
+  setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
 function toggleReviewed() {
@@ -406,8 +411,9 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
         </div>
-        <div class="progress-track" role="progressbar" aria-label="Review progress weighted by diff size" :aria-valuemin="0" :aria-valuemax="100" :aria-valuenow="progress" :aria-valuetext="`${reviewedCount} of ${app.files.value.length} files reviewed; ${reviewedChangedLines} of ${totalChangedLines} returned changed lines reviewed`">
-          <span v-for="segment in progressSegments" :key="segment.path" class="progress-segment" :class="{ reviewed: segment.reviewed }" :style="{ flexGrow: segment.weight }" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" />
+        <span class="progress-sr-only" role="progressbar" aria-label="Review progress weighted by diff size" :aria-valuemin="0" :aria-valuemax="100" :aria-valuenow="progress" :aria-valuetext="`${reviewedCount} of ${app.files.value.length} files reviewed; ${reviewedChangedLines} of ${totalChangedLines} returned changed lines reviewed`" />
+        <div class="progress-track" role="group" aria-label="Changed files; select a segment to open its diff">
+          <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === app.selectedPath.value }" :style="{ flexGrow: segment.weight }" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}; ${segment.changedLines} changed lines`" :aria-current="segment.path === app.selectedPath.value ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" @click="openProgressSegment(segment.file)" />
         </div>
       </template>
       <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL"><button class="approve">Open review</button></form>
@@ -436,12 +442,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <div v-if="app.busy.value && !activeFile" class="empty-state">Loading merge request…</div>
         <template v-else-if="activeFile">
           <div class="file-toolbar">
-            <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
+            <div class="file-heading">
+              <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
+              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
+            </div>
             <div class="file-actions">
               <div class="review-actions">
                 <button class="quiet previous-file" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
                 <button class="quiet" aria-label="Next unreviewed file" @click="navigate(1)">Next unreviewed →</button>
-                <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
                 <label class="wrap-toggle auto-advance"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
               </div>
               <div class="view-actions">

@@ -3,19 +3,26 @@
 /* Review workflow polish */
 :root{--review-action-ink:#fff}
 .progress-label{display:inline-flex;align-items:center;padding:4px 7px;border:1px solid var(--line);border-radius:5px;background:var(--paper);white-space:nowrap}
-.progress-track{height:5px;display:flex;gap:3px;overflow:hidden;pointer-events:none}
-.progress-segment{display:block;flex:0 1 0;min-width:2px;height:100%;border-radius:2px;background:var(--line);transition:background-color .16s ease}
-.progress-segment.reviewed{background:var(--good)}
+.progress-track{height:8px;display:flex;gap:4px;overflow:hidden;pointer-events:auto}
+.progress-segment{display:block;flex:0 1 0;min-width:1px;height:100%;padding:0;border-radius:3px;background:var(--line);opacity:.5}
+.progress-segment.reviewed{background:var(--good);opacity:1}
+.progress-segment.selected{outline:1px solid var(--accent);outline-offset:-1px}
+.progress-segment:hover{opacity:.8}
+.progress-segment.reviewed:hover{opacity:1}
+.progress-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.topbar{z-index:5}
 .action-menu,.display-menu{position:relative}
 .action-menu>summary,.display-menu>summary{list-style:none;cursor:pointer}
 .action-menu>summary::-webkit-details-marker,.display-menu>summary::-webkit-details-marker{display:none}
 .action-menu-popover,.display-popover{position:absolute;z-index:15;top:calc(100% + 6px);right:0;min-width:190px;max-width:calc(100vw - 16px);padding:6px;display:flex;flex-direction:column;align-items:stretch;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:6px;box-shadow:0 10px 28px #10141c2b}
 .action-menu-popover .quiet{text-align:left}
 .file-toolbar{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:8px}
+.file-heading{display:flex;align-items:center;gap:12px;min-width:0}
+.file-heading .path-label{flex:1}
 .file-actions{display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:6px;width:100%}
 .review-actions{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
 .review-actions .previous-file{min-width:32px;padding-inline:8px}
-.review-toggle{padding:6px 10px;border:1px solid transparent;border-radius:5px;color:var(--review-action-ink);background:var(--good);font-size:11px;font-weight:600}
+.review-toggle{min-height:32px;padding:7px 12px;border:1px solid transparent;border-radius:5px;color:var(--review-action-ink);background:var(--good);font-size:12px;font-weight:600;white-space:nowrap}
 .review-toggle:hover{filter:brightness(.96)}
 .review-toggle.reviewed{color:var(--muted);background:var(--paper);border-color:var(--line)}
 .auto-advance{padding:4px 7px;border:1px solid var(--line);border-radius:5px;cursor:pointer}
@@ -27,6 +34,5 @@
 .display-popover{min-width:170px;gap:8px;padding:10px}
 .display-popover .wrap-toggle{cursor:pointer}
 @media(max-width:1000px){.top-actions{gap:3px}.progress-label{display:inline-flex}}
-@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-actions{width:100%}.review-actions{gap:3px}.review-toggle{flex:1;min-width:112px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
+@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-heading .review-toggle{flex:none;min-width:0}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
 @media(prefers-color-scheme:dark){:root{--review-action-ink:#102d27}}
-@media(prefers-reduced-motion:reduce){.progress-segment{transition:none}}
