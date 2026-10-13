@@ -12,23 +12,24 @@ concurrency:
 
 jobs:
   changeset-check:
-    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'changeset-release/')
+    if: github.event_name == 'push' || !startsWith(github.head_ref, 'changeset-release/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Require release note for package changes
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/require-changeset.mjs "$BASE_SHA" "$HEAD_SHA"
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: changeset-check
     runs-on: ubuntu-latest
     permissions:
       contents: write
