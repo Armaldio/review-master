@@ -139,6 +139,18 @@ test('review screen preserves preview navigation and local drafts while reviewin
   });
   assert.ok(toolbarLayout.scrollWidth <= toolbarLayout.clientWidth, 'header actions do not overflow at tablet width');
   assert.ok(toolbarLayout.actionsTop >= toolbarLayout.headingBottom - 1, 'header actions wrap to a separate row at tablet width');
+  await page.setViewportSize({ width: 809, height: 768 });
+  assert.equal(await page.getByRole('button', { name: 'Approve' }).isVisible(), true, 'the primary review action stays visible');
+  assert.equal(await page.getByRole('button', { name: 'Request changes' }).isVisible(), true, 'request changes stays easy to reach');
+  assert.equal(await page.getByRole('button', { name: 'Unapprove' }).isVisible(), false, 'secondary state actions are tucked into More');
+  await page.getByText('More (2)', { exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Publish drafts (2)' }).isVisible(), true, 'secondary actions remain available from More');
+  await page.getByText('More (2)', { exact: true }).click();
+  await page.setViewportSize({ width: 600, height: 768 });
+  await page.getByText('More (2)', { exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Publish drafts (2)' }).isVisible(), true, 'the action menu remains usable on narrow screens');
+  await page.getByText('More (2)', { exact: true }).click();
+  await page.setViewportSize({ width: 809, height: 768 });
   await page.getByRole('button', { name: 'Toggle light and dark theme' }).click();
   const selectedColors = await page.locator('.file-row.selected').evaluate(el => {
     const style = getComputedStyle(el);
@@ -196,6 +208,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.getByRole('button', { name: 'Edit draft note 31' }).click();
   assert.equal(await page.getByLabel('Edit GitLab draft note').inputValue(), 'Locally edited pending note', 'unsent draft-note edits persist through navigation, refresh and reload');
   await page.getByRole('button', { name: 'Save draft note' }).click();
+  await page.getByText('More (1)', { exact: true }).click();
   await page.getByRole('button', { name: 'Publish drafts (1)' }).dblclick();
   assert.equal(publishCalls, 1, 'double-click cannot publish the same draft batch twice');
   await page.waitForFunction(() => document.querySelector('.draft-notes')?.textContent?.includes('No GitLab draft notes') ?? false);

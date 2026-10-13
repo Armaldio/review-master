@@ -33,6 +33,7 @@ const commentBusy = ref(false);
 const draftNotesBusy = ref(false);
 const replyBusy = ref(false);
 const mrActionBusy = ref(false);
+const actionMenu = ref<HTMLDetailsElement>();
 const editingDraftNote = ref('');
 const draftNoteText = ref('');
 const summaryOpen = ref(false);
@@ -297,6 +298,10 @@ function toggleTheme() {
   document.documentElement.dataset.theme = theme.value;
   localStorage.setItem('review-master-theme', theme.value);
 }
+
+function closeActionMenu() {
+  if (actionMenu.value) actionMenu.value.open = false;
+}
 function startPreviewResize() {
   const onMove = (move: PointerEvent) => { previewWidth.value = Math.max(320, Math.min(window.innerWidth * .7, window.innerWidth - move.clientX)); };
   const onUp = () => {
@@ -370,9 +375,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
           <button class="quiet" @click="showSummary('summary')">Summary</button>
           <button class="quiet" @click="showSummary('changes')">Request changes</button>
-          <button class="quiet" :disabled="mrActionBusy" @click="mrAction('unapprove')">Unapprove</button>
-          <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="publishDraftNotes">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
-          <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="mrAction('ready')">Mark ready</button>
+          <details ref="actionMenu" class="action-menu">
+            <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
+            <div class="action-menu-popover">
+              <button class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('unapprove')">Unapprove</button>
+              <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeActionMenu(); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
+              <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('ready')">Mark ready</button>
+            </div>
+          </details>
           <button class="approve" :disabled="mrActionBusy" @click="mrAction('approve')">Approve</button>
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
