@@ -15,7 +15,7 @@ MergePeek uses an existing `glab` login for the exact GitLab host first. Run `gl
 
 The command binds only to `127.0.0.1:4173` by default and opens the requested merge request. Reusing the same local origin keeps browser review state available after restarting the CLI. Set `REVIEW_MASTER_PORT` to use another local port if 4173 is already in use. Ctrl+C stops the server. No argument prints usage. For local development use `npm run dev` and supply a merge request URL in the page.
 
-While the CLI is running, its terminal reports a new commit (short SHA) or the number of newly published comments detected during refresh. It seeds the current MR on load, so existing activity is not announced; later changes are detected on the app's normal refreshes (every 90 seconds while visible, or on manual/focus refresh). Log lines contain no comment text, author names or credentials.
+While the CLI is running, its terminal reports a new commit (short SHA), the number of newly published comments, or when the MR is merged or closed. It seeds the current MR on load, so existing activity is not announced; later changes are detected on the app's normal refreshes (every 90 seconds while visible, or on manual/focus refresh). Log lines contain no comment text, author names or credentials.
 
 ## Security and API behavior
 

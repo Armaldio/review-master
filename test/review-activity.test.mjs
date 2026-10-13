@@ -28,3 +28,13 @@ test('tracks merge requests independently and reports plural comment counts with
   assert.deepEqual(logs, ['MergePeek: 2 new comments']);
   assert.ok(!logs.join('').includes('private comment'));
 });
+
+test('logs when an open merge request is merged or closed, only once', () => {
+  const logs = [];
+  const track = createReviewActivityLogger(message => logs.push(message));
+  track('gitlab/project/7', { state: 'opened' }, []);
+  track('gitlab/project/7', { state: 'merged' }, []);
+  track('gitlab/project/7', { state: 'merged' }, []);
+
+  assert.deepEqual(logs, ['MergePeek: merge request merged']);
+});
