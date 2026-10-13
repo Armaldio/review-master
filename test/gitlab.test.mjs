@@ -79,6 +79,19 @@ test('GitLab API helper withholds credentials from redirects and exposes rate li
   });
 });
 
+test('explains stale GitLab diff positions so reviewers can refresh and reselect a line', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'position is outdated' }), { status: 400 });
+  await assert.rejects(() => gitlab('https://gitlab.example/api/v4/notes', 'token-value'), error => {
+    assert.equal(error.statusCode, 400);
+    assert.match(error.statusMessage, /position is out of date/i);
+    assert.match(error.statusMessage, /refresh.*reselect/i);
+    assert.doesNotMatch(error.message, /token-value|position is outdated/);
+    return true;
+  });
+});
+
 test('resolves GitLab.com and self-managed credentials independently by exact host', async () => {
   const candidates = new Map([
     ['gitlab.com', 'gitlab-com-token'],

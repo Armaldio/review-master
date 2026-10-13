@@ -98,9 +98,8 @@ function renderMarkdown(source: string) {
   const markup = marked.parse(source, { async: false, gfm: true, breaks: true });
   const fragment = DOMPurify.sanitize(markup, { RETURN_DOM_FRAGMENT: true }) as DocumentFragment;
   const container = document.createElement('div');
-  container.append(fragment);
   const host = new URL(app.mrUrl.value).origin;
-  for (const image of container.querySelectorAll('img')) {
+  for (const image of fragment.querySelectorAll('img')) {
     try {
       const target = new URL(image.getAttribute('src') || '', host);
       if (target.origin !== host || !(target.pathname.startsWith('/uploads/') || target.pathname.startsWith(`/api/v4/projects/${app.review.value?.mr.project_id}/uploads/`))) { image.remove(); continue; }
@@ -109,10 +108,11 @@ function renderMarkdown(source: string) {
       image.loading = 'lazy';
     } catch { image.remove(); }
   }
-  for (const link of container.querySelectorAll('a')) {
+  for (const link of fragment.querySelectorAll('a')) {
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
   }
+  container.append(fragment);
   return container.innerHTML;
 }
 
@@ -417,7 +417,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
             <div class="file-actions"><button class="quiet" @click="navigate(-1)">← Previous</button><button class="quiet" @click="navigate(1)">Next unreviewed →</button><button class="quiet" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button><label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label><span class="toolbar-rule"/><button class="quiet" :class="{ chosen: mode === 'split' }" @click="mode = 'split'">Split</button><button class="quiet" :class="{ chosen: mode === 'unified' }" @click="mode = 'unified'">Unified</button><label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap</label><label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous</label></div>
           </div>
-          <div v-if="activeFile.collapsed || activeFile.too_large" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
+          <div v-if="(activeFile.collapsed || activeFile.too_large) && !expandedFiles[fileName(activeFile)]" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
           <div class="diff-scroll">
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="file.new_path + file.identity" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
