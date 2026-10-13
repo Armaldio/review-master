@@ -1,5 +1,6 @@
 import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '../utils/gitlab.ts';
 import { logReviewActivity } from '../utils/review-activity.ts';
+import { codeownersForPath } from '../../shared/codeowners.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
@@ -25,7 +26,8 @@ export default defineEventHandler(async event => {
       ]);
       if (process.env.REVIEW_MASTER_CLI === '1') logReviewActivity(`${mr.host}/${mr.projectPath}/${mr.iid}`, info, discussions);
       const owners = await loadCodeowners(project, info.target_branch, token);
-      const ownership = await verifyOwners(owners.rules, user, projectInfo, token, mr.host);
+      const relevantOwners = [...new Set(diffs.flatMap(file => codeownersForPath(owners.rules, file.deleted_file ? file.old_path : file.new_path).owners))];
+      const ownership = await verifyOwners(relevantOwners, user, projectInfo, token, mr.host);
       const heads = await mapLimit(diffs, 6, async file => {
         if (file.deleted_file) return { path: file.old_path, sha: 'deleted' };
         try {
@@ -38,7 +40,7 @@ export default defineEventHandler(async event => {
         mr: { ...info, diff_refs: info.diff_refs || {} }, user: { id: user.id, username: user.username, name: user.name },
         project: { id: projectInfo.id, path: projectInfo.path_with_namespace, namespace: projectInfo.namespace?.full_path },
         diffs: diffs.map(file => ({ ...file, identity: heads.find(head => head.path === (file.deleted_file ? file.old_path : file.new_path))?.sha ?? null })),
-        discussions, draftNotes, codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning || ownership.warning,
+        discussions, draftNotes, codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning,
       };
     }
     case 'refresh': {
@@ -147,7 +149,7 @@ async function mapLimit<T, R>(items: T[], limit: number, map: (item: T) => Promi
   return result;
 }
 
-async function loadCodeowners(project: string, targetBranch: string, token: string): Promise<{ rules: { pattern: string; owners: string[]; section?: string }[]; warning?: string }> {
+async function loadCodeowners(project: string, targetBranch: string, token: string): Promise<{ rules: { pattern: string; owners: string[]; section?: string; exclude?: boolean }[]; warning?: string }> {
   for (const path of ['CODEOWNERS', 'docs/CODEOWNERS', '.gitlab/CODEOWNERS']) {
     const url = `${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(targetBranch)}`;
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
@@ -158,7 +160,7 @@ async function loadCodeowners(project: string, targetBranch: string, token: stri
 }
 
 function parseCodeowners(source: string) {
-  const rules: { pattern: string; owners: string[]; section?: string }[] = [];
+  const rules: { pattern: string; owners: string[]; section?: string; exclude?: boolean }[] = [];
   let section = '';
   try {
     for (const raw of source.split(/\r?\n/)) {
@@ -171,35 +173,40 @@ function parseCodeowners(source: string) {
         continue;
       }
       const parts = line.split(/\s+/);
-      if (parts.length < 2 || parts[0]?.startsWith('!')) return { rules: [], warning: 'CODEOWNERS contains unsupported syntax; showing all files.' };
-      rules.push({ pattern: parts.shift()!, owners: parts, ...(section ? { section } : {}) });
+      const pattern = parts.shift()!;
+      if (pattern.startsWith('!')) {
+        if (pattern.length === 1 || parts.length) return { rules: [], warning: 'CODEOWNERS contains unsupported syntax; showing all files.' };
+        rules.push({ pattern: pattern.slice(1), owners: [], exclude: true, ...(section ? { section } : {}) });
+      } else if (parts.length) {
+        rules.push({ pattern, owners: parts, ...(section ? { section } : {}) });
+      }
     }
     return { rules };
   } catch { return { rules: [], warning: 'CODEOWNERS could not be parsed; showing all files.' }; }
 }
 
-async function verifyOwners(rules: { owners: string[] }[], user: any, project: any, token: string, host: string) {
+async function verifyOwners(owners: string[], user: any, project: any, token: string, host: string) {
   const roles: Record<string, number> = { guest: 10, planner: 15, reporter: 20, developer: 30, maintainer: 40, owner: 50 };
-  const status: Record<string, boolean | null> = {};
   const roleLevel = project.permissions?.project_access?.access_level || project.permissions?.group_access?.access_level || 0;
-  for (const owner of new Set(rules.flatMap(rule => rule.owners))) {
+  const results = await mapLimit([...new Set(owners)], 4, async owner => {
     const normalized = owner.replace(/^@/, '').toLowerCase();
-    if (!owner.startsWith('@')) { status[owner] = user.email?.toLowerCase() === normalized ? true : null; continue; }
+    if (!owner.startsWith('@')) return [owner, user.email?.toLowerCase() === normalized ? true : null] as const;
     const groupRole = owner.match(/^@(.+)%([a-z]+)$/i);
     if (owner.startsWith('@@')) {
       const role = owner.slice(2).toLowerCase();
-      status[owner] = roles[role] ? roleLevel >= roles[role] : null;
-      continue;
+      return [owner, roles[role] ? roleLevel >= roles[role] : null] as const;
     }
-    if (!groupRole && normalized === String(user.username).toLowerCase()) { status[owner] = true; continue; }
+    if (!groupRole && normalized === String(user.username).toLowerCase()) return [owner, true] as const;
     const groupPath = groupRole?.[1] || normalized;
     const requiredLevel = groupRole ? roles[groupRole[2]!.toLowerCase()] : 0;
-    if (groupRole && !requiredLevel) { status[owner] = null; continue; }
+    if (groupRole && !requiredLevel) return [owner, null] as const;
     try {
       const members = await gitlab<any[]>(`${host}/api/v4/groups/${encodeURIComponent(groupPath)}/members?query=${encodeURIComponent(user.username)}&per_page=100`, token);
       const member = members.find(item => String(item.id) === String(user.id));
-      status[owner] = member ? member.access_level >= (requiredLevel || 0) : false;
-    } catch { status[owner] = null; }
-  }
-  return { status, ...(Object.values(status).includes(null) ? { warning: 'Some CODEOWNERS groups or roles could not be verified; showing all files.' } : {}) };
+      return [owner, member ? member.access_level >= (requiredLevel || 0) : false] as const;
+    } catch { return [owner, null] as const; }
+  });
+  const status: Record<string, boolean | null> = {};
+  for (const [owner, value] of results) status[owner] = value;
+  return { status };
 }

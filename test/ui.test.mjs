@@ -14,11 +14,11 @@ let remoteDraftText = 'Remote GitLab draft';
 const data = () => ({
   mr: { ...mr, sha: currentMrSha }, user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2, path: 'group/app' },
   diffs: [
-    { old_path: 'src/a.ts', new_path: 'src/a.ts', diff: patch('src/a.ts', 'const oldA = 1;', 'const newA = 2;'), new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-a' },
+    { old_path: 'doc/releases/19/release.md', new_path: 'doc/releases/19/release.md', diff: '@@ -0,0 +1 @@\n+const newA = 2;\n', new_file: true, deleted_file: false, renamed_file: false, identity: 'blob-a' },
     { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: patch('src/b.ts', 'const oldB = 1;', 'const newB = 2;'), new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
     ...(includeFullFile ? [{ old_path: 'src/full.ts', new_path: 'src/full.ts', diff: '', old_id: 'old-full', new_id: 'new-full', new_file: false, deleted_file: false, renamed_file: false, too_large: true, identity: 'blob-full' }] : []),
-  ], discussions: [], draftNotes: [{ id: 31, note: remoteDraftText, position: null }, { id: 32, note: 'Delete this draft', position: null }],
-  codeowners: [{ pattern: 'src/a.ts', owners: ['reviewer'] }, { pattern: 'src/b.ts', owners: ['other'] }], ownerStatus: { reviewer: true, other: false },
+  ], discussions: [{ id: 'thread-1', resolved: false, notes: [{ id: 41, body: 'Mock discussion', author: { id: 6, name: 'Reviewer' }, award_emoji: [] }] }], draftNotes: [{ id: 31, note: remoteDraftText, position: null }, { id: 32, note: 'Delete this draft', position: null }],
+  codeowners: [{ pattern: 'releases/**/*.md', owners: ['reviewer'] }, { pattern: 'src/b.ts', owners: ['other'] }], ownerStatus: { reviewer: true, other: false },
 });
 async function availablePort() {
   const server = createServer();
@@ -127,6 +127,24 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.getByText('0/2 reviewed').count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).count(), 1);
   assert.equal(await page.getByText('Remote GitLab draft').count(), 1, 'GitLab drafts have a separate display');
+  await page.locator('diffs-container').waitFor();
+  assert.equal(await page.locator('diffs-container').count(), 1, 'GitLab hunk-only diffs render in Pierre, including new files');
+  assert.match(await page.locator('diffs-container').evaluate(el => el.shadowRoot?.textContent || ''), /const newA = 2;/);
+  assert.ok((await page.locator('.reaction').allTextContents()).includes('👍'), 'discussion reactions render as emoji');
+  await page.setViewportSize({ width: 961, height: 892 });
+  const toolbarLayout = await page.locator('.topbar').evaluate(el => {
+    const heading = el.querySelector('.mr-heading').getBoundingClientRect();
+    const actions = el.querySelector('.top-actions').getBoundingClientRect();
+    return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, headingBottom: heading.bottom, actionsTop: actions.top };
+  });
+  assert.ok(toolbarLayout.scrollWidth <= toolbarLayout.clientWidth, 'header actions do not overflow at tablet width');
+  assert.ok(toolbarLayout.actionsTop >= toolbarLayout.headingBottom - 1, 'header actions wrap to a separate row at tablet width');
+  await page.getByRole('button', { name: 'Toggle light and dark theme' }).click();
+  const selectedColors = await page.locator('.file-row.selected').evaluate(el => {
+    const style = getComputedStyle(el);
+    return { background: style.backgroundColor, color: style.color };
+  });
+  assert.notEqual(selectedColors.background, 'rgb(238, 234, 251)', 'dark mode uses a dark selected-file background');
   assert.equal(await page.locator('.file-row').count(), 1, 'Only my files filters by confirmed CODEOWNERS membership');
   await page.getByRole('button', { name: 'Details' }).click();
   assert.equal(externalImageRequests.length, 0, 'external Markdown images are removed before the browser can request them');

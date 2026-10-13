@@ -47,6 +47,7 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const requests = [];
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
+  const codeownersFile = '[Maintainers] @reviewer\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
   let currentSha = 'head';
   let currentDiscussions = [];
   let cliLogs = '';
@@ -67,7 +68,10 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
       : url.pathname.endsWith('/discussions') ? currentDiscussions
       : url.pathname.includes('/draft_notes') && !url.pathname.endsWith('/bulk_publish') ? [draft]
       : null;
-    if (url.pathname.includes('/repository/files/')) return new Response('', { status: 404 });
+    if (url.pathname.includes('/repository/files/')) {
+      if (url.pathname.includes('.gitlab%2FCODEOWNERS')) return new Response(codeownersFile);
+      return new Response('', { status: 404 });
+    }
     if (url.pathname.includes('/draft_notes/') && ['PUT', 'DELETE', 'POST'].includes(init.method)) return new Response('{}', { status: 200 });
     if (url.pathname.endsWith('/approve') || url.pathname.endsWith('/unapprove') || url.pathname.endsWith('/notes')) return new Response('{}', { status: 200 });
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -80,6 +84,9 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const loaded = await call('bootstrap');
   assert.deepEqual(loaded.draftNotes.map(item => item.id), [31]);
+  assert.equal(loaded.ownerWarning, undefined, 'a wildcard fallback and exclusions in a real GitLab CODEOWNERS file do not disable ownership parsing');
+  assert.ok(loaded.codeowners.some(rule => rule.exclude && rule.pattern === 'docs/private/**'));
+  assert.ok(!requests.some(request => request.path.includes('/groups/unused%2Fgroup/members')), 'only owners that apply to changed paths are checked');
   const refreshed = await call('refresh');
   assert.deepEqual(refreshed.draftNotes.map(item => item.id), [31]);
   assert.equal(cliLogs, '', 'initial load and unchanged refresh do not announce existing activity');
