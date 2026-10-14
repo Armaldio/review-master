@@ -93,6 +93,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await context.route('**/api/gitlab', async route => {
     const request = route.request().postDataJSON();
     apiCalls.push(request.action);
+    if (request.action === 'bootstrap') await new Promise(resolve => setTimeout(resolve, 500));
     if (request.action === 'delete-draft-note') {
       deleteCalls++;
       if (failDraftDeleteOnce) {
@@ -120,6 +121,8 @@ test('review screen preserves preview navigation and local drafts while reviewin
   });
   const url = `${baseUrl}/?mr=${encodeURIComponent('https://gitlab.example/group/app/-/merge_requests/7')}`;
   await page.goto(url);
+  await page.getByRole('status').getByText('Loading merge request…', { exact: true }).waitFor({ state: 'visible' });
+  assert.equal(await page.getByRole('button', { name: 'Loading review…' }).isDisabled(), true, 'the launch form stays disabled while the initial MR is loading');
   try {
     await page.waitForFunction(() => document.querySelectorAll('.file-row').length > 0, undefined, { timeout: 15_000 });
     const onlyMine = page.getByRole('checkbox', { name: 'Only my files' });

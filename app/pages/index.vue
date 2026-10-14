@@ -416,8 +416,9 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === app.selectedPath.value }" :style="{ flexGrow: segment.weight }" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}; ${segment.changedLines} changed lines`" :aria-current="segment.path === app.selectedPath.value ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" @click="openProgressSegment(segment.file)" />
         </div>
       </template>
-      <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL"><button class="approve">Open review</button></form>
+      <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL" :disabled="app.busy.value"><button class="approve" :disabled="app.busy.value">{{ app.busy.value ? 'Loading review…' : 'Open review' }}</button></form>
     </header>
+    <div v-if="app.busy.value && !app.review.value" class="empty-state" role="status">Loading merge request…</div>
     <!-- eslint-disable-next-line vue/no-v-html -->
     <div v-if="app.review.value?.mr.description && descriptionOpen" class="description" v-html="renderMarkdown(app.review.value.mr.description)" />
     <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button @click="app.error.value = ''">Dismiss</button></div>
