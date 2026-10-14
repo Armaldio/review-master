@@ -82,8 +82,12 @@ test('review screen preserves preview navigation and local drafts while reviewin
   let previewLoads = 0;
   let publishedDrafts = false;
   let publishCalls = 0;
+  let delayFirstRefresh = true;
   let deleteCalls = 0;
   let failDraftDeleteOnce = true;
+  let holdIdentityHydration = false;
+  let releaseIdentityHydration = () => {};
+  let identityRequestSignal;
   const deletedDrafts = new Set();
   page.on('pageerror', error => errors.push(error.message));
   await context.route('https://attacker.invalid/**', async route => {
@@ -93,7 +97,16 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await context.route('**/api/gitlab', async route => {
     const request = route.request().postDataJSON();
     apiCalls.push(request.action);
-    if (request.action === 'bootstrap') await new Promise(resolve => setTimeout(resolve, 500));
+    if (request.action === 'file-identities' && holdIdentityHydration) {
+      identityRequestSignal?.();
+      identityRequestSignal = undefined;
+      await new Promise(resolve => { releaseIdentityHydration = resolve; });
+    }
+    if (request.action === 'bootstrap') await new Promise(resolve => setTimeout(resolve, 1_500));
+    if (request.action === 'refresh' && delayFirstRefresh) {
+      delayFirstRefresh = false;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     if (request.action === 'delete-draft-note') {
       deleteCalls++;
       if (failDraftDeleteOnce) {
@@ -104,8 +117,10 @@ test('review screen preserves preview navigation and local drafts while reviewin
       deletedDrafts.add(request.payload.draftNoteId);
     }
     if (request.action === 'edit-draft-note') remoteDraftText = request.payload.note;
-    const result = request.action === 'bootstrap' ? data()
-      : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: [], draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+    const result = request.action === 'bootstrap' ? { ...data(), diffs: data().diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })), discussions: [], draftNotes: [], codeowners: [], ownerStatus: {} }
+      : request.action === 'file-identities' ? { identities: Object.fromEntries(data().diffs.filter(file => request.payload.paths.includes(file.new_path)).map(file => [file.new_path, file.identity])) }
+      : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+      : request.action === 'verify-owners' ? { codeowners: data().codeowners, ownerStatus: { reviewer: true, other: false } }
       : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa-feature', match: 'exact', stale: false }] }
       : request.action === 'comment' ? { id: 1 }
       : request.action === 'files' ? { content: request.payload.ref === 'head-full' ? 'const value = 2;' : 'const value = 1;' }
@@ -126,6 +141,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.locator('.loading-spinner').count(), 1, 'the initial MR load shows a spinner');
   try {
     await page.waitForFunction(() => document.querySelectorAll('.file-row').length > 0, undefined, { timeout: 15_000 });
+    assert.equal(await page.getByText('Remote GitLab draft').count(), 0, 'the initial file view renders before delayed discussion and draft hydration');
     const onlyMine = page.getByRole('checkbox', { name: 'Only my files' });
     if (!await onlyMine.isChecked()) await onlyMine.check();
     await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 1, undefined, { timeout: 15_000 });
@@ -147,6 +163,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.getByRole('checkbox', { name: 'Only my files' }).isChecked(), false, 'a segment opens its file even when filters hid it');
   await page.getByRole('checkbox', { name: 'Only my files' }).check();
   assert.equal(await page.locator('.path-label strong').innerText(), 'doc/releases/19/release.md');
+  await page.getByText('Remote GitLab draft').waitFor({ state: 'visible' });
   assert.equal(await page.getByText('Remote GitLab draft').count(), 1, 'GitLab drafts have a separate display');
   await page.locator('diffs-container').waitFor();
   assert.equal(await page.locator('diffs-container').count(), 1, 'GitLab hunk-only diffs render in Pierre, including new files');
@@ -286,6 +303,26 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.getByRole('button', { name: 'Load full file' }).click();
   await page.waitForFunction(() => !document.querySelector('.diff-warning'));
   assert.equal(await page.locator('diffs-container').count(), 1, 'a successfully loaded full file replaces the collapsed-file prompt with its diff');
+  await page.evaluate(() => {
+    const key = 'review-master:v3:https://gitlab.example:5:2:7';
+    const state = JSON.parse(localStorage.getItem(key) || '{}');
+    state.reviewed = { 'src/b.ts': 'blob-b' };
+    state.autoAdvance = true;
+    localStorage.setItem(key, JSON.stringify(state));
+  });
+  holdIdentityHydration = true;
+  const identityRequested = new Promise(resolve => { identityRequestSignal = resolve; });
+  await page.reload();
+  await identityRequested;
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.shadowRoot?.querySelector('[data-line]'));
+  assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).isDisabled(), true, 'a file cannot be marked reviewed until its content identity is known');
+  await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).uncheck();
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('review-master:v3:https://gitlab.example:5:2:7')).reviewed), { 'src/b.ts': 'blob-b' }, 'saving another review preference keeps unresolved reviewed candidates in local storage');
+  releaseIdentityHydration();
+  holdIdentityHydration = false;
+  await page.locator('.file-row').nth(1).click();
+  await page.getByRole('button', { name: 'Mark unreviewed', exact: true }).waitFor();
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/3 · /, 'matching identities restore the previously reviewed file after hydration');
   assert.deepEqual(errors, [], 'browser console should have no page exceptions');
   await context.close();
 });

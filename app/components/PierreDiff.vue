@@ -18,6 +18,7 @@ function getWorkerPool() {
 
 const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null } }>();
 const emit = defineEmits<{
+  (event: 'ready'): void;
   (event: 'lineSelected', line: { lineNumber: number; side: 'new' | 'old' }): void;
   (event: 'lineRange', range: SelectedLineRange): void;
 }>();
@@ -34,6 +35,21 @@ let metadata: ReturnType<typeof parseDiffFromFile> | undefined;
 let contentLines = 0;
 let previousMode = props.mode;
 let previousWrap = props.wrap;
+let readyObserver: MutationObserver | null = null;
+let readyEmitted = false;
+function notifyReady() {
+  if (readyEmitted || !target.value) return;
+  const root = target.value.querySelector('diffs-container')?.shadowRoot;
+  if (root && !readyObserver) {
+    readyObserver = new MutationObserver(notifyReady);
+    readyObserver.observe(root, { childList: true, subtree: true });
+  }
+  if (target.value.querySelector('.raw-diff') || root?.querySelector('[data-line]')) {
+    readyEmitted = true;
+    readyObserver?.disconnect();
+    emit('ready');
+  }
+}
 function render() {
   if (!target.value) return;
   let metadataChanged = false;
@@ -84,6 +100,7 @@ function render() {
     fallback.textContent = props.diff || 'Pierre could not parse this GitLab diff.';
     target.value.appendChild(fallback);
     target.value.classList.remove('code-view');
+    notifyReady();
     return;
   }
   const shouldVirtualize = contentLines > 2_000;
@@ -109,6 +126,7 @@ function render() {
       if (metadataChanged) codeView.setItems([{ id: props.path, type: 'diff', fileDiff: metadata, version: ++codeViewItemVersion }]);
       if (optionsChanged) codeView.setOptions(options as CodeViewOptions<any, any>);
     }
+    notifyReady();
     return;
   }
   if (!view && shouldVirtualize) {
@@ -128,10 +146,11 @@ function render() {
   const renderProps = { fileContainer: fileContainer!, fileDiff: metadata, forceRender: optionsChanged };
   if (oldFile && newFile) simpleView.render({ ...renderProps, oldFile, newFile });
   else simpleView.render(renderProps);
+  notifyReady();
 }
 onMounted(render);
 watch(() => [props.diff, props.path, props.mode, props.wrap, props.continuous, props.fullFiles], render);
-onBeforeUnmount(() => { view?.cleanUp(); virtualizer?.cleanUp(); });
+onBeforeUnmount(() => { readyObserver?.disconnect(); view?.cleanUp(); virtualizer?.cleanUp(); });
 </script>
 <template><div ref="target" class="diff-shell" :class="{ wrap }" :data-path="path" /></template>
 <style>

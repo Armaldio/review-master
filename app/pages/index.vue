@@ -6,7 +6,8 @@ import { useReview } from '~/composables/useReview';
 import { codeownersForPath } from '#shared/codeowners';
 
 const app = useReview();
-const PierreDiff = defineAsyncComponent(() => import('~/components/PierreDiff.vue'));
+const loadPierreDiff = () => import('~/components/PierreDiff.vue');
+const PierreDiff = defineAsyncComponent(loadPierreDiff);
 const mode = ref<'split' | 'unified'>('split');
 const wrap = ref(false);
 const continuous = ref(false);
@@ -56,6 +57,7 @@ const reactions = [
 const notice = ref('');
 const currentMr = ref('');
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+let hydratedDiffKey = '';
 
 const fileName = (file: any) => file?.new_file ? file.new_path : file?.deleted_file ? file.old_path : file?.new_path;
 const ownerRules = computed(() => app.review.value?.codeowners || []);
@@ -71,7 +73,7 @@ function matchOwner(filePath: string) {
 const eligibleFiles = computed(() => app.files.value.filter(file => {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) return false;
   if (!onlyMine.value) return true;
-  return matchOwner(fileName(file)) !== false;
+  return matchOwner(fileName(file)) === true;
 }));
 const activeFile = computed(() => app.selected.value);
 const displayedFiles = computed(() => eligibleFiles.value);
@@ -100,7 +102,7 @@ const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
-const hasUnknownOwner = computed(() => !!app.review.value?.ownerWarning || eligibleFiles.value.some(file => matchOwner(fileName(file)) === null));
+const hasUnknownOwner = computed(() => !app.ownershipPending.value && eligibleFiles.value.some(file => matchOwner(fileName(file)) === null));
 
 function renderMarkdown(source: string) {
   if (!import.meta.client || !app.mrUrl.value) return source;
@@ -312,6 +314,10 @@ async function refreshReview(force = false) {
   } else if (previousDiffIdentity && nextDiffIdentity !== previousDiffIdentity) {
     expandedFiles.value = {};
   }
+  if (previousDiffIdentity && nextDiffIdentity !== previousDiffIdentity) {
+    await nextTick();
+    scheduleReviewSupplementals(false);
+  }
 }
 function onVisibility() { if (!document.hidden) void refreshReview(); }
 function showSummary(intent: 'summary' | 'changes') { summaryIntent.value = intent; summary.value = app.drafts.value['mr:summary'] || ''; summaryOpen.value = true; }
@@ -341,9 +347,28 @@ function parseInitialUrl() {
   const params = new URLSearchParams(location.search);
   return params.get('mr') || '';
 }
+function loadReviewSupplementals(refresh = true) {
+  const review = app.review.value;
+  if (!review) return;
+  const key = `${app.mrUrl.value}:${review.mr.sha}:${review.mr.diff_refs?.base_sha || ''}:${review.mr.diff_refs?.head_sha || ''}`;
+  if (key === hydratedDiffKey) return;
+  hydratedDiffKey = key;
+  void app.verifyOwnership();
+  void app.hydrateIdentities().catch(() => {});
+  if (refresh) void app.refresh(true);
+}
+function scheduleReviewSupplementals(refresh = true) {
+  requestAnimationFrame(() => requestAnimationFrame(() => loadReviewSupplementals(refresh)));
+}
 async function start(url: string) {
   currentMr.value = url;
-  try { await app.bootstrap(url); if (previewOpen.value) void discoverPreview(); }
+  void loadPierreDiff().catch(() => {});
+  try {
+    await app.bootstrap(url);
+    if (previewOpen.value) void discoverPreview();
+    await nextTick();
+    scheduleReviewSupplementals();
+  }
   catch { /* error is shown in the header */ }
 }
 onMounted(() => {
@@ -430,7 +455,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
       <aside class="file-sidebar">
         <div class="sidebar-title"><span>CHANGES</span><span>{{ app.files.value.length }}</span></div>
         <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
-        <label class="filter-toggle"><input v-model="onlyMine" type="checkbox"> Only my files</label>
+        <label class="filter-toggle"><input v-model="onlyMine" type="checkbox" :disabled="app.ownershipPending.value || Boolean(app.review.value.ownerWarning)"> Only my files</label>
         <div v-if="app.review.value.ownerWarning" class="owner-warning">{{ app.review.value.ownerWarning }}</div>
         <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay visible.</div>
         <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
@@ -474,14 +499,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <div v-if="(activeFile.collapsed || activeFile.too_large) && !expandedFiles[fileName(activeFile)]" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
           <div class="diff-scroll">
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
-              <article v-for="file in displayedFiles" :key="file.new_path + file.identity" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
+              <article v-for="file in displayedFiles" :key="file.new_path" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">Comment on file</button></header>
-                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path + activeFile.identity" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>

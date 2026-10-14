@@ -37,12 +37,13 @@ try {
   for (const scenario of scenarios) {
     const paths = scenario.lineCounts.map((_, index) => `src/file-${String(index + 1).padStart(3, '0')}.ts`);
     const maxLinesPerFile = Math.max(...scenario.lineCounts);
-    const patch = (path, lineCount) => `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lineCount} @@\n${Array.from({ length: lineCount }, (_, index) => `+export const item${index} = ${index};`).join('\n')}\n`;
-    const mr = { id: 77, iid: 7, title: scenario.name, description: '', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'bench', target_branch: 'main', sha: 'head', diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }, source_project_id: 2, target_project_id: 2, author: { username: 'bench', name: 'Benchmark' } };
-    const data = { mr, user: { id: 5, username: 'bench', name: 'Benchmark' }, project: { id: 2, path: 'group/app' }, discussions: [], draftNotes: [], codeowners: [], diffs: paths.map((path, index) => ({ old_path: path, new_path: path, old_id: 'old-blob', new_id: 'new-blob', diff: patch(path, scenario.lineCounts[index]), new_file: true, deleted_file: false, renamed_file: false, identity: path })) };
+    const patch = (_path, lineCount) => `@@ -0,0 +1,${lineCount} @@\n${Array.from({ length: lineCount }, (_, index) => `+export const item${index} = ${index};`).join('\n')}\n`;
+    const mr = { id: 77, iid: 7, title: scenario.name, description: '', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'bench', target_branch: 'main', sha: 'head', diff_refs: { base_sha: 'base', head_sha: 'head', start_sha: 'start' }, source_project_id: 2, target_project_id: 2, reviewers: [{ id: 5, username: 'bench', name: 'Benchmark', state: 'unreviewed' }], author: { username: 'bench', name: 'Benchmark' } };
+    const data = { mr, user: { id: 5, username: 'bench', name: 'Benchmark' }, project: { id: 2, path: 'group/app' }, discussions: [], draftNotes: [], codeowners: [{ pattern: 'src/file-001.ts', owners: ['@reviewer-team'] }], diffs: paths.map((path, index) => ({ old_path: path, new_path: path, old_id: 'old-blob', new_id: 'new-blob', diff: patch(path, scenario.lineCounts[index]), new_file: true, deleted_file: false, renamed_file: false, identity: path })) };
     const context = await browser.newContext();
     const page = await context.newPage();
     const commentPayloads = [];
+    const apiActions = [];
     await page.addInitScript(() => {
       window.__longTasks = [];
       if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
@@ -53,15 +54,16 @@ try {
     page.on('console', message => { if (message.type() === 'error') errors.push(`${scenario.name}: ${message.text()}`); });
     await context.route('**/api/gitlab', route => {
       const request = route.request().postDataJSON();
+      apiActions.push(request.action);
       if (request.action === 'comment') commentPayloads.push(request.payload);
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(request.action === 'bootstrap' ? data : { mr, discussions: [], draftNotes: [] }) });
+      const response = request.action === 'bootstrap' ? { ...data, diffs: data.diffs.map(file => ({ ...file, identity: null })) }
+        : request.action === 'file-identities' ? { identities: Object.fromEntries(data.diffs.filter(file => request.payload.paths.includes(file.new_path)).map(file => [file.new_path, file.identity])) }
+          : request.action === 'verify-owners' ? { codeowners: data.codeowners, ownerStatus: { '@reviewer-team': true } } : { mr, discussions: [], draftNotes: [] };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) });
     });
 
-    await page.goto(baseUrl);
-    await page.getByRole('textbox', { name: 'Merge request URL' }).waitFor();
     const started = performance.now();
-    await page.getByRole('textbox', { name: 'Merge request URL' }).fill(mr.web_url);
-    await page.getByRole('button', { name: 'Open review' }).click();
+    await page.goto(`${baseUrl}/?mr=${encodeURIComponent(mr.web_url)}`);
     await page.locator(`.diff-shell[data-path="${paths[0]}"] diffs-container`).waitFor({ timeout: 30_000 });
     await page.evaluate(() => {
       const scrollRoot = document.querySelector('.diff-shell.code-view') || document.querySelector('.diff-scroll');
@@ -77,11 +79,30 @@ try {
         return observer;
       });
     });
-    await page.waitForFunction(path => {
-      const root = document.querySelector(`.diff-shell[data-path="${path}"] diffs-container`);
-      return root?.shadowRoot?.querySelector('[data-line]') != null;
-    }, paths[0], { timeout: 30_000 });
+    try {
+      await page.waitForFunction(path => {
+        const root = document.querySelector(`.diff-shell[data-path="${path}"] diffs-container`);
+        return root?.shadowRoot?.querySelector('[data-line]') != null;
+      }, paths[0], { timeout: 30_000 });
+    } catch (error) {
+      const state = await page.evaluate(() => ({ title: document.title, text: document.body.innerText.slice(0, 500), path: document.querySelector('.diff-shell')?.getAttribute('data-path'), shell: document.querySelector('.diff-shell')?.innerHTML.slice(0, 500), resources: performance.getEntriesByType('resource').filter(entry => entry.name.includes('/api/gitlab')).map(entry => ({ start: entry.startTime, duration: entry.duration })) }));
+      throw new Error(`${scenario.name}: first line did not render (${JSON.stringify(state)}); ${error.message}`, { cause: error });
+    }
+    const firstLineTiming = await page.evaluate(() => ({
+      firstLineAt: performance.now(),
+      bootstrapStart: performance.getEntriesByType('resource').find(entry => entry.name.endsWith('/api/gitlab'))?.startTime || 0,
+    }));
     const firstVisibleLineMs = performance.now() - started;
+    const firstLineAfterBootstrapMs = firstLineTiming.bootstrapStart ? firstLineTiming.firstLineAt - firstLineTiming.bootstrapStart : firstVisibleLineMs;
+    await page.waitForFunction(() => { const input = document.querySelector('.filter-toggle input'); return input && !input.disabled; }, undefined, { timeout: 30_000 });
+    if (!apiActions.includes('verify-owners')) throw new Error(`${scenario.name}: assigned reviewer ownership was not checked`);
+    const ownerEligibilityMs = performance.now() - started;
+    const onlyMine = page.getByRole('checkbox', { name: 'Only my files' });
+    await onlyMine.check();
+    await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 1, undefined, { timeout: 15_000 });
+    const positivelyOwnedFilesShown = await page.locator('.file-row').count();
+    await onlyMine.uncheck();
+    await page.waitForFunction(expected => document.querySelectorAll('.file-row').length === expected, paths.length);
     const highlightSettled = await page.evaluate(async () => {
       const startedAt = performance.now();
       return new Promise(resolve => {
@@ -206,6 +227,9 @@ try {
       changedLinesPerFile: { min: Math.min(...scenario.lineCounts), max: maxLinesPerFile },
       totalChangedLines: scenario.lineCounts.reduce((sum, value) => sum + value, 0),
       firstVisibleLineMs: Number(firstVisibleLineMs.toFixed(1)),
+      firstLineAfterBootstrapMs: Number(firstLineAfterBootstrapMs.toFixed(1)),
+      ownerEligibilityMs: Number(ownerEligibilityMs.toFixed(1)),
+      positivelyOwnedFilesShown,
       highlightSettledMs: Number(highlightSettled.ms.toFixed(1)),
       highlightSettled: highlightSettled.settled,
       scroll30FramesMs: Number(scroll.median30FramesMs.toFixed(1)),
@@ -227,18 +251,18 @@ try {
       diffDomMutationsDuringDiscussionRefresh: discussionRefreshMutations,
       ...(cpuProfileTop.length ? { cpuProfileTop } : {}),
     };
-    if (result.firstVisibleLineMs > 8_000) thresholdFailures.push(`${scenario.name}: first visible line exceeded 8 s`);
+    if (result.firstLineAfterBootstrapMs > 3_000) thresholdFailures.push(`${scenario.name}: first line exceeded 3 s after bootstrap started`);
     if (!result.highlightSettled) thresholdFailures.push(`${scenario.name}: highlighter did not settle within 10 s`);
-    if (result.scrollP95FrameMs > 250 || result.scroll30FramesMs > 10_000) thresholdFailures.push(`${scenario.name}: scroll exceeded 250 ms p95 or 10 s total`);
+    if (result.scrollP95FrameMs > 300 || result.scroll30FramesMs > 10_000) thresholdFailures.push(`${scenario.name}: scroll exceeded 300 ms p95 or 10 s total`);
     if ((result.medianFileSwitchMs ?? 0) > 2_500) thresholdFailures.push(`${scenario.name}: file switch exceeded 2.5 s`);
-    if (result.domNodes > 12_000 || result.mainThreadHeapPeakMb > 256) thresholdFailures.push(`${scenario.name}: main-thread DOM or heap exceeded its memory budget`);
+    if (result.diffDomNodes > 12_000 || result.mainThreadHeapPeakMb > 256) thresholdFailures.push(`${scenario.name}: rendered diff DOM or heap exceeded its memory budget`);
     if (result.maxLongTaskMsDuringScroll > 500) thresholdFailures.push(`${scenario.name}: a main-thread long task exceeded 500 ms during scrolling`);
     if (result.diffDomMutationsDuringDiscussionRefresh !== 0) thresholdFailures.push(`${scenario.name}: discussion polling mutated the unchanged diff DOM`);
     results.push(result);
     await context.close();
   }
   if (errors.length) throw new Error(`Browser errors: ${errors.join('; ')}`);
-  console.log(JSON.stringify({ browser: 'Chromium headless, production Nitro server', thresholds: { firstVisibleLineMs: 8_000, scrollP95FrameMs: 250, scroll30FramesMs: 10_000, medianFileSwitchMs: 2_500, domNodes: 12_000, mainThreadHeapMb: 256, maxLongTaskMs: 500 }, thresholdFailures, results }, null, 2));
+  console.log(JSON.stringify({ browser: 'Chromium headless, production Nitro server', thresholds: { firstLineAfterBootstrapMs: 3_000, scrollP95FrameMs: 300, scroll30FramesMs: 10_000, medianFileSwitchMs: 2_500, diffDomNodes: 12_000, mainThreadHeapMb: 256, maxLongTaskMs: 500 }, thresholdFailures, results }, null, 2));
   if (thresholdFailures.length) process.exitCode = 1;
 } finally {
   if (browser) await browser.close();

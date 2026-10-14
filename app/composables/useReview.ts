@@ -9,12 +9,15 @@ export function useReview() {
   const selectedPath = ref('');
   const error = ref('');
   const busy = ref(false);
+  const ownershipPending = ref(false);
   const refreshedAt = ref(0);
   const retryAt = ref(0);
   const backoffMs = ref(90_000);
   const drafts = ref<Record<string, string>>({});
   const reviewed = ref<Record<string, string>>({});
+  const pendingReviewed = ref<Record<string, string>>({});
   const autoAdvance = ref(true);
+  let bootstrapGeneration = 0;
   const files = computed(() => review.value?.diffs ?? []);
   const selected = computed(() => files.value.find(file => (file.new_file ? file.new_path : file.deleted_file ? file.old_path : file.new_path) === selectedPath.value) ?? files.value[0] ?? null);
   const storageKey = computed(() => {
@@ -29,12 +32,23 @@ export function useReview() {
       drafts.value = value.drafts && typeof value.drafts === 'object' ? value.drafts : {};
       autoAdvance.value = typeof value.autoAdvance === 'boolean' ? value.autoAdvance : true;
       const old = value.reviewed || {};
-      reviewed.value = Object.fromEntries(Object.entries(old).filter(([path, sha]) => typeof sha === 'string' && files.value.some(file => (file.deleted_file ? file.old_path : file.new_path) === path && file.identity && file.identity === sha))) as Record<string, string>;
-    } catch { drafts.value = {}; reviewed.value = {}; error.value = 'Local review state could not be loaded from browser storage.'; }
+      const candidates = Object.entries(old).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
+      const currentFiles = new Map(files.value.map(file => [file.deleted_file ? file.old_path : file.new_path, file]));
+      const confirmed: Record<string, string> = {};
+      const pending: Record<string, string> = {};
+      for (const [path, sha] of candidates) {
+        const file = currentFiles.get(path);
+        if (!file) continue;
+        if (file.identity === null) pending[path] = sha;
+        else if (file.identity === sha) confirmed[path] = sha;
+      }
+      reviewed.value = confirmed;
+      pendingReviewed.value = pending;
+    } catch { drafts.value = {}; reviewed.value = {}; pendingReviewed.value = {}; error.value = 'Local review state could not be loaded from browser storage.'; }
   }
   function persist() {
     if (!import.meta.client || !storageKey.value) return;
-    try { localStorage.setItem(storageKey.value, JSON.stringify({ drafts: drafts.value, reviewed: reviewed.value, autoAdvance: autoAdvance.value })); }
+    try { localStorage.setItem(storageKey.value, JSON.stringify({ drafts: drafts.value, reviewed: { ...pendingReviewed.value, ...reviewed.value }, autoAdvance: autoAdvance.value })); }
     catch { error.value = 'Local review state could not be saved to browser storage.'; }
   }
   async function call<T = any>(action: string, payload?: Record<string, unknown>): Promise<T> {
@@ -54,6 +68,8 @@ export function useReview() {
     finally { if (!error.value) { retryAt.value = 0; backoffMs.value = 90_000; } }
   }
   async function bootstrap(url: string) {
+    const generation = ++bootstrapGeneration;
+    ownershipPending.value = true;
     mrUrl.value = url;
     busy.value = true;
     try {
@@ -62,7 +78,58 @@ export function useReview() {
       selectedPath.value ||= data.diffs[0]?.new_path || data.diffs[0]?.old_path || '';
       readLocal();
       refreshedAt.value = Date.now();
-    } finally { busy.value = false; }
+    } finally {
+      busy.value = false;
+      if (generation === bootstrapGeneration && !review.value) ownershipPending.value = false;
+    }
+  }
+  async function verifyOwnership() {
+    const generation = bootstrapGeneration;
+    if (!review.value) return;
+    const item = review.value;
+    ownershipPending.value = true;
+    try {
+      const ownership = await call<{ codeowners: ReviewData['codeowners']; ownerStatus: Record<string, boolean | null>; ownerWarning?: string }>('verify-owners', {
+        paths: item.diffs.map(file => file.deleted_file ? file.old_path : file.new_path),
+        targetBranch: item.mr.target_branch,
+      });
+      if (generation === bootstrapGeneration && review.value) review.value = { ...review.value, ...ownership };
+    } catch {
+      if (generation === bootstrapGeneration && review.value) review.value = { ...review.value, ownerWarning: 'CODEOWNERS owners could not be verified; showing all files.' };
+    } finally {
+      if (generation === bootstrapGeneration) ownershipPending.value = false;
+    }
+  }
+  async function hydrateIdentities() {
+    const generation = bootstrapGeneration;
+    const item = review.value;
+    if (!item) return;
+    const paths = item.diffs.filter(file => !file.deleted_file && !file.identity).map(file => file.new_path);
+    if (!paths.length) return;
+    const result = await call<{ identities: Record<string, string | null> }>('file-identities', { paths, sha: item.mr.sha });
+    if (!review.value || generation !== bootstrapGeneration) return;
+    const current = review.value;
+    const diffs = current.diffs.map(file => {
+      const path = file.deleted_file ? file.old_path : file.new_path;
+      const identity = result.identities[path];
+      return identity ? { ...file, identity } : file;
+    });
+    review.value = { ...current, diffs };
+
+    const currentFiles = new Map(diffs.map(file => [file.deleted_file ? file.old_path : file.new_path, file]));
+    const confirmed = { ...reviewed.value };
+    const pending = Object.fromEntries(Object.entries(pendingReviewed.value).filter(([path, sha]) => {
+      const file = currentFiles.get(path);
+      if (!file) return false;
+      if (file.identity !== null) {
+        if (file.identity === sha) confirmed[path] = sha;
+        return false;
+      }
+      return true;
+    }));
+    pendingReviewed.value = pending;
+    reviewed.value = confirmed;
+    persist();
   }
   async function refresh(force = false) {
     if (!review.value || busy.value || (!force && Date.now() < retryAt.value)) return;
@@ -72,8 +139,10 @@ export function useReview() {
       const current = review.value.mr;
       const oldDiffIdentity = `${current.sha}:${current.diff_refs?.base_sha || ''}:${current.diff_refs?.head_sha || ''}:${current.diff_refs?.start_sha || ''}`;
       const nextDiffIdentity = `${updated.mr.sha}:${updated.mr.diff_refs?.base_sha || ''}:${updated.mr.diff_refs?.head_sha || ''}:${updated.mr.diff_refs?.start_sha || ''}`;
-      review.value = { ...review.value, mr: updated.mr, discussions: updated.discussions, draftNotes: updated.draftNotes };
-      if (nextDiffIdentity !== oldDiffIdentity) await bootstrap(mrUrl.value);
+      if (nextDiffIdentity !== oldDiffIdentity) {
+        await bootstrap(mrUrl.value);
+        if (review.value) review.value = { ...review.value, mr: updated.mr, discussions: updated.discussions, draftNotes: updated.draftNotes };
+      } else review.value = { ...review.value, mr: updated.mr, discussions: updated.discussions, draftNotes: updated.draftNotes };
       refreshedAt.value = Date.now();
     } catch { /* error is visible in the review header */
     } finally { busy.value = false; }
@@ -82,11 +151,12 @@ export function useReview() {
   function setReviewed(file: DiffFile, value: boolean) {
     const path = file.new_file ? file.new_path : file.deleted_file ? file.old_path : file.new_path;
     if (!file.identity) return;
+    pendingReviewed.value = Object.fromEntries(Object.entries(pendingReviewed.value).filter(([key]) => key !== path));
     reviewed.value = value
       ? { ...reviewed.value, [path]: file.identity }
       : Object.fromEntries(Object.entries(reviewed.value).filter(([key]) => key !== path)) as Record<string, string>;
     persist();
   }
   function setAutoAdvance(value: boolean) { autoAdvance.value = value; persist(); }
-  return { mrUrl, review, files, selectedPath, selected, error, busy, refreshedAt, retryAt, drafts, reviewed, autoAdvance, call, bootstrap, refresh, setDraft, setReviewed, setAutoAdvance };
+  return { mrUrl, review, files, selectedPath, selected, error, busy, ownershipPending, refreshedAt, retryAt, drafts, reviewed, autoAdvance, call, bootstrap, verifyOwnership, hydrateIdentities, refresh, setDraft, setReviewed, setAutoAdvance };
 }

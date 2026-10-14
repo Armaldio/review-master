@@ -21,31 +21,42 @@ export default defineEventHandler(async event => {
 
   switch (body.action) {
     case 'bootstrap': {
-      const [info, projectInfo, diffs, discussions, draftNotes] = await Promise.all([
+      const [info, diffs] = await Promise.all([
         detail(),
-        gitlab<any>(project, token),
         gitlabPages<Diff>(`${base}/diffs`, token),
-        gitlabPages<any>(`${base}/discussions`, token),
-        gitlabPages<any>(`${base}/draft_notes`, token),
       ]);
-      if (process.env.REVIEW_MASTER_CLI === '1') logReviewActivity(`${mr.host}/${mr.projectPath}/${mr.iid}`, info, discussions);
-      const owners = await loadCodeowners(project, info.target_branch, token);
-      const relevantOwners = [...new Set(diffs.flatMap(file => codeownersForPath(owners.rules, file.deleted_file ? file.old_path : file.new_path).owners))];
-      const ownership = await verifyOwners(relevantOwners, user, projectInfo, token, mr.host);
-      const heads = await mapLimit(diffs, 6, async file => {
-        if (file.deleted_file) return { path: file.old_path, sha: 'deleted' };
-        try {
-          const response = await fetch(`${project}/repository/files/${encodeURIComponent(file.new_path)}?ref=${encodeURIComponent(info.sha)}`, { method: 'HEAD', headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
-          if (!response.ok) return { path: file.new_path, sha: null };
-          return { path: file.new_path, sha: response.headers.get('x-gitlab-blob-id') || response.headers.get('x-gitlab-content-sha256') };
-        } catch { return { path: file.new_path, sha: null }; }
-      });
       return {
         mr: { ...info, diff_refs: info.diff_refs || {} }, user: { id: user.id, username: user.username, name: user.name },
-        project: { id: projectInfo.id, path: projectInfo.path_with_namespace, namespace: projectInfo.namespace?.full_path },
-        diffs: diffs.map(file => ({ ...file, identity: heads.find(head => head.path === (file.deleted_file ? file.old_path : file.new_path))?.sha ?? null })),
-        discussions, draftNotes, codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning,
+        project: { id: info.project_id },
+        diffs: diffs.map(file => ({
+          ...file,
+          identity: file.deleted_file ? 'deleted' : null,
+        })),
+        discussions: [], draftNotes: [], codeowners: [], ownerStatus: {},
       };
+    }
+    case 'file-identities': {
+      const paths = Array.isArray(body.payload?.paths)
+        ? [...new Set(body.payload.paths.filter((path): path is string => typeof path === 'string' && path.length > 0 && path.length <= 4096).slice(0, 1000))]
+        : [];
+      const sha = typeof body.payload?.sha === 'string' ? body.payload.sha : '';
+      if (!sha || sha.length > 128) throw createError({ statusCode: 400, statusMessage: 'A valid merge request head SHA is required' });
+      const files = paths.map(path => ({ old_path: path, new_path: path, diff: '', new_file: false, deleted_file: false, renamed_file: false }));
+      const identities = await fileIdentities(files, project, sha, token);
+      return { identities: Object.fromEntries(identities.map(item => [item.path, item.sha])) };
+    }
+    case 'verify-owners': {
+      const paths = Array.isArray(body.payload?.paths)
+        ? [...new Set(body.payload.paths.filter((path): path is string => typeof path === 'string' && path.length <= 4096).slice(0, 1000))]
+        : [];
+      const targetBranch = typeof body.payload?.targetBranch === 'string' ? body.payload.targetBranch : '';
+      const [projectInfo, owners] = await Promise.all([
+        gitlab<any>(project, token),
+        targetBranch ? loadCodeowners(project, targetBranch, token) : Promise.resolve({ rules: [], warning: 'CODEOWNERS could not be verified; showing all files.' }),
+      ]);
+      const relevantOwners = [...new Set(paths.flatMap(path => codeownersForPath(owners.rules, path).owners))];
+      const ownership = await verifyOwners(relevantOwners, user, projectInfo, token, mr.host);
+      return { codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning };
     }
     case 'refresh': {
       const [info, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
@@ -153,6 +164,17 @@ async function mapLimit<T, R>(items: T[], limit: number, map: (item: T) => Promi
   return result;
 }
 
+async function fileIdentities(diffs: Diff[], project: string, sha: string, token: string) {
+  return mapLimit(diffs, 6, async file => {
+    if (file.deleted_file) return { path: file.old_path, sha: 'deleted' };
+    try {
+      const response = await fetch(`${project}/repository/files/${encodeURIComponent(file.new_path)}?ref=${encodeURIComponent(sha)}`, { method: 'HEAD', headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
+      if (!response.ok) return { path: file.new_path, sha: null };
+      return { path: file.new_path, sha: response.headers.get('x-gitlab-blob-id') || response.headers.get('x-gitlab-content-sha256') };
+    } catch { return { path: file.new_path, sha: null }; }
+  });
+}
+
 async function loadCodeowners(project: string, targetBranch: string, token: string): Promise<{ rules: { pattern: string; owners: string[]; section?: string; exclude?: boolean }[]; warning?: string }> {
   const read = (path: string) => {
     const url = `${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(targetBranch)}`;
@@ -174,6 +196,7 @@ async function loadCodeowners(project: string, targetBranch: string, token: stri
 function parseCodeowners(source: string) {
   const rules: { pattern: string; owners: string[]; section?: string; exclude?: boolean }[] = [];
   let section = '';
+  let sectionOwners: string[] = [];
   try {
     for (const raw of source.split(/\r?\n/)) {
       const line = raw.trim();
@@ -181,7 +204,7 @@ function parseCodeowners(source: string) {
       const heading = line.match(/^\^?\[([^\]]+)\](?:\[\d+\])?(?:\s+(.+))?$/);
       if (heading) {
         section = heading[1]!.trim();
-        if (heading[2]) rules.push({ pattern: '**', owners: heading[2].trim().split(/\s+/), section });
+        sectionOwners = heading[2]?.trim().split(/\s+/) || [];
         continue;
       }
       const parts = line.split(/\s+/);
@@ -189,8 +212,8 @@ function parseCodeowners(source: string) {
       if (pattern.startsWith('!')) {
         if (pattern.length === 1 || parts.length) return { rules: [], warning: 'CODEOWNERS contains unsupported syntax; showing all files.' };
         rules.push({ pattern: pattern.slice(1), owners: [], exclude: true, ...(section ? { section } : {}) });
-      } else if (parts.length) {
-        rules.push({ pattern, owners: parts, ...(section ? { section } : {}) });
+      } else {
+        rules.push({ pattern, owners: parts.length ? parts : sectionOwners, ...(section ? { section } : {}) });
       }
     }
     return { rules };
