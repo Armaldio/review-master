@@ -14,7 +14,7 @@ const continuousRoot = ref<HTMLElement | null>(null);
 const continuousVisible = ref(new Set<string>());
 let continuousObserver: IntersectionObserver | undefined;
 const tree = ref(false);
-const onlyMine = ref(true);
+const onlyMine = ref(false);
 const query = ref('');
 const descriptionOpen = ref(false);
 const previewOpen = ref(false);
