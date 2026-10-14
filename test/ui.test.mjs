@@ -82,8 +82,12 @@ test('review screen preserves preview navigation and local drafts while reviewin
   let previewLoads = 0;
   let publishedDrafts = false;
   let publishCalls = 0;
+  let delayFirstRefresh = true;
   let deleteCalls = 0;
   let failDraftDeleteOnce = true;
+  let holdIdentityHydration = false;
+  let releaseIdentityHydration = () => {};
+  let identityRequestSignal;
   const deletedDrafts = new Set();
   page.on('pageerror', error => errors.push(error.message));
   await context.route('https://attacker.invalid/**', async route => {
@@ -93,6 +97,16 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await context.route('**/api/gitlab', async route => {
     const request = route.request().postDataJSON();
     apiCalls.push(request.action);
+    if (request.action === 'file-identities' && holdIdentityHydration) {
+      identityRequestSignal?.();
+      identityRequestSignal = undefined;
+      await new Promise(resolve => { releaseIdentityHydration = resolve; });
+    }
+    if (request.action === 'bootstrap') await new Promise(resolve => setTimeout(resolve, 1_500));
+    if (request.action === 'refresh' && delayFirstRefresh) {
+      delayFirstRefresh = false;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
     if (request.action === 'delete-draft-note') {
       deleteCalls++;
       if (failDraftDeleteOnce) {
@@ -103,8 +117,10 @@ test('review screen preserves preview navigation and local drafts while reviewin
       deletedDrafts.add(request.payload.draftNoteId);
     }
     if (request.action === 'edit-draft-note') remoteDraftText = request.payload.note;
-    const result = request.action === 'bootstrap' ? data()
-      : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: [], draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+    const result = request.action === 'bootstrap' ? { ...data(), diffs: data().diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })), discussions: [], draftNotes: [], codeowners: [], ownerStatus: {} }
+      : request.action === 'file-identities' ? { identities: Object.fromEntries(data().diffs.filter(file => request.payload.paths.includes(file.new_path)).map(file => [file.new_path, file.identity])) }
+      : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+      : request.action === 'verify-owners' ? { codeowners: data().codeowners, ownerStatus: { reviewer: true, other: false } }
       : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa-feature', match: 'exact', stale: false }] }
       : request.action === 'comment' ? { id: 1 }
       : request.action === 'files' ? { content: request.payload.ref === 'head-full' ? 'const value = 2;' : 'const value = 1;' }
@@ -120,12 +136,34 @@ test('review screen preserves preview navigation and local drafts while reviewin
   });
   const url = `${baseUrl}/?mr=${encodeURIComponent('https://gitlab.example/group/app/-/merge_requests/7')}`;
   await page.goto(url);
-  try { await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 1, undefined, { timeout: 15_000 }); }
-  catch { throw new Error(`Review files did not load. DOM: ${(await page.locator('body').innerText()).slice(0, 500)}. Browser errors: ${errors.join('; ')}. Server logs: ${serverLogs.slice(-8).join('')}`); }
+  await page.getByRole('status').getByText('Loading merge request…', { exact: true }).waitFor({ state: 'visible' });
+  assert.equal(await page.locator('.url-form').count(), 0, 'the launch form is removed');
+  assert.equal(await page.locator('.loading-spinner').count(), 1, 'the initial MR load shows a spinner');
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('.file-row').length > 0, undefined, { timeout: 15_000 });
+    assert.equal(await page.getByText('Remote GitLab draft').count(), 0, 'the initial file view renders before delayed discussion and draft hydration');
+    const onlyMine = page.getByRole('checkbox', { name: 'Only my files' });
+    if (!await onlyMine.isChecked()) await onlyMine.check();
+    await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 1, undefined, { timeout: 15_000 });
+  } catch {
+    throw new Error(`Review files did not load or CODEOWNERS filtering failed. Only my files: ${await page.getByRole('checkbox', { name: 'Only my files' }).isChecked()}. Warning: ${await page.locator('.owner-warning').innerText().catch(() => 'none')}. DOM: ${(await page.locator('body').innerText()).slice(0, 500)}. Browser errors: ${errors.join('; ')}. Server logs: ${serverLogs.slice(-8).join('')}`);
+  }
   assert.equal(await page.locator('iframe').count(), 0, 'preview is closed by default');
   assert.equal(await page.locator('.reviewed-mark').count(), 0, 'opening the first file must not mark it reviewed');
-  assert.equal(await page.getByText('0/2 reviewed').count(), 1);
+  assert.equal(await page.getByText('0/2 · 0%', { exact: true }).count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).count(), 1);
+  assert.equal(await page.locator('.progress-segment').count(), 2, 'the progress bar keeps one segment per changed file');
+  assert.equal(await page.locator('.file-heading .review-toggle').count(), 1, 'the primary review action stays beside the filename');
+  const segmentWidths = await page.locator('.progress-segment').evaluateAll(segments => segments.map(segment => segment.getBoundingClientRect().width));
+  assert.ok(segmentWidths.every(width => width > 0), 'every file segment remains visible');
+  const initialSegmentOpacity = await page.locator('.progress-segment').evaluateAll(segments => segments.map(segment => getComputedStyle(segment).opacity));
+  assert.ok(initialSegmentOpacity.every(opacity => Number(opacity) < 1), 'unreviewed file segments are dimmed');
+  await page.locator('.progress-segment').nth(1).click();
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'clicking a segment opens its file');
+  assert.equal(await page.getByRole('checkbox', { name: 'Only my files' }).isChecked(), false, 'a segment opens its file even when filters hid it');
+  await page.getByRole('checkbox', { name: 'Only my files' }).check();
+  assert.equal(await page.locator('.path-label strong').innerText(), 'doc/releases/19/release.md');
+  await page.getByText('Remote GitLab draft').waitFor({ state: 'visible' });
   assert.equal(await page.getByText('Remote GitLab draft').count(), 1, 'GitLab drafts have a separate display');
   await page.locator('diffs-container').waitFor();
   assert.equal(await page.locator('diffs-container').count(), 1, 'GitLab hunk-only diffs render in Pierre, including new files');
@@ -141,9 +179,10 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.ok(toolbarLayout.actionsTop >= toolbarLayout.headingBottom - 1, 'header actions wrap to a separate row at tablet width');
   await page.setViewportSize({ width: 809, height: 768 });
   assert.equal(await page.getByRole('button', { name: 'Approve' }).isVisible(), true, 'the primary review action stays visible');
-  assert.equal(await page.getByRole('button', { name: 'Request changes' }).isVisible(), true, 'request changes stays easy to reach');
+  assert.equal(await page.getByRole('button', { name: 'Request changes' }).isVisible(), false, 'secondary review actions stay out of the crowded header');
   assert.equal(await page.getByRole('button', { name: 'Unapprove' }).isVisible(), false, 'secondary state actions are tucked into More');
   await page.getByText('More (2)', { exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: 'Request changes' }).isVisible(), true, 'request changes remains available from More');
   assert.equal(await page.getByRole('button', { name: 'Publish drafts (2)' }).isVisible(), true, 'secondary actions remain available from More');
   await page.getByText('More (2)', { exact: true }).click();
   await page.setViewportSize({ width: 600, height: 768 });
@@ -171,32 +210,37 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.locator('.file-row').nth(1).click();
   assert.equal(await page.locator('.reviewed-mark').count(), 0, 'navigating must not mark a file reviewed');
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  assert.equal(await page.getByText('1/2 reviewed').count(), 1);
+  const reviewedSegmentOpacity = await page.locator('.progress-segment').evaluateAll(segments => segments.map(segment => getComputedStyle(segment).opacity));
+  assert.deepEqual(reviewedSegmentOpacity.sort(), ['0.5', '1'], 'reviewed segments are bright while unreviewed segments stay dimmed');
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/);
   currentMrSha = 'head2';
   await page.getByRole('button', { name: '↻ Refresh' }).click();
-  assert.equal(await page.getByText('1/2 reviewed').count(), 1, 'review status survives MR updates when the file identity is unchanged');
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/, 'review status survives MR updates when the file identity is unchanged');
   await page.reload();
   await page.getByRole('checkbox', { name: 'Only my files' }).uncheck();
   await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 2);
-  assert.equal(await page.getByText('1/2 reviewed').count(), 1, 'reviewed status survives a browser restart when file identity is unchanged');
-  assert.equal(await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).isChecked(), false);
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/, 'reviewed status survives a browser restart when file identity is unchanged');
+  assert.equal(await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).isChecked(), true, 'auto-advance keeps its default preference after reload');
   await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).check();
   await page.locator('.file-row').nth(1).click();
   await page.getByRole('button', { name: 'Mark unreviewed', exact: true }).click();
-  assert.equal(await page.getByText('0/2 reviewed').count(), 1);
+  assert.match(await page.locator('.progress-label').innerText(), /^0\/2 · 0%$/);
   await page.locator('.file-row').nth(0).click();
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  assert.equal(await page.getByText('1/2 reviewed').count(), 1);
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/);
   assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'auto-advance selects the next unreviewed file');
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
-  assert.equal(await page.getByText('2/2 reviewed').count(), 1);
+  assert.match(await page.locator('.progress-label').innerText(), /^2\/2 · 100%$/);
   await page.getByRole('button', { name: 'Mark unreviewed', exact: true }).click();
-  assert.equal(await page.getByText('1/2 reviewed').count(), 1);
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/);
   const draftEdit = page.getByRole('button', { name: 'Edit draft note 31' });
   assert.equal(await draftEdit.count(), 1, 'existing GitLab draft notes can be edited');
   await page.getByRole('button', { name: 'Delete draft note 32' }).click();
   assert.match(await page.getByRole('alert').innerText(), /Draft delete failed/, 'failed GitLab operations are shown to the reviewer');
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Delete draft note 32"]')?.disabled);
+  const retryResponse = page.waitForResponse(response => response.url().endsWith('/api/gitlab') && response.request().postDataJSON().action === 'delete-draft-note');
   await page.getByRole('button', { name: 'Delete draft note 32' }).click();
+  await retryResponse;
   assert.equal(deleteCalls, 2, 'a failed request can be deliberately retried without duplicating its first success');
   await draftEdit.click();
   await page.getByLabel('Edit GitLab draft note').fill('Locally edited pending note');
@@ -247,7 +291,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   assert.equal(await page.evaluate(() => window.__diffMutations), 0, 'discussion polling leaves unchanged diff DOM untouched');
   assert.equal(await page.evaluate(() => window.__diffRoot === document.querySelector('diffs-container')), true);
   assert.ok(apiCalls.includes('refresh'));
-  await page.getByLabel('Close preview').click();
+  await page.getByRole('button', { name: 'Close preview', exact: true }).first().click();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.getByLabel('Find a file').isVisible(), true, 'file search stays available on a narrow screen');
   assert.equal(await page.locator('.file-path').first().isVisible(), true, 'file names remain visible in mobile navigation');
@@ -259,6 +303,26 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.getByRole('button', { name: 'Load full file' }).click();
   await page.waitForFunction(() => !document.querySelector('.diff-warning'));
   assert.equal(await page.locator('diffs-container').count(), 1, 'a successfully loaded full file replaces the collapsed-file prompt with its diff');
+  await page.evaluate(() => {
+    const key = 'review-master:v3:https://gitlab.example:5:2:7';
+    const state = JSON.parse(localStorage.getItem(key) || '{}');
+    state.reviewed = { 'src/b.ts': 'blob-b' };
+    state.autoAdvance = true;
+    localStorage.setItem(key, JSON.stringify(state));
+  });
+  holdIdentityHydration = true;
+  const identityRequested = new Promise(resolve => { identityRequestSignal = resolve; });
+  await page.reload();
+  await identityRequested;
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.shadowRoot?.querySelector('[data-line]'));
+  assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).isDisabled(), true, 'a file cannot be marked reviewed until its content identity is known');
+  await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).uncheck();
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('review-master:v3:https://gitlab.example:5:2:7')).reviewed), { 'src/b.ts': 'blob-b' }, 'saving another review preference keeps unresolved reviewed candidates in local storage');
+  releaseIdentityHydration();
+  holdIdentityHydration = false;
+  await page.locator('.file-row').nth(1).click();
+  await page.getByRole('button', { name: 'Mark unreviewed', exact: true }).waitFor();
+  assert.match(await page.locator('.progress-label').innerText(), /^1\/3 · /, 'matching identities restore the previously reviewed file after hydration');
   assert.deepEqual(errors, [], 'browser console should have no page exceptions');
   await context.close();
 });

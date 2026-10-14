@@ -6,7 +6,8 @@ import { useReview } from '~/composables/useReview';
 import { codeownersForPath } from '#shared/codeowners';
 
 const app = useReview();
-const PierreDiff = defineAsyncComponent(() => import('~/components/PierreDiff.vue'));
+const loadPierreDiff = () => import('~/components/PierreDiff.vue');
+const PierreDiff = defineAsyncComponent(loadPierreDiff);
 const mode = ref<'split' | 'unified'>('split');
 const wrap = ref(false);
 const continuous = ref(false);
@@ -14,7 +15,7 @@ const continuousRoot = ref<HTMLElement | null>(null);
 const continuousVisible = ref(new Set<string>());
 let continuousObserver: IntersectionObserver | undefined;
 const tree = ref(false);
-const onlyMine = ref(true);
+const onlyMine = ref(false);
 const query = ref('');
 const descriptionOpen = ref(false);
 const previewOpen = ref(false);
@@ -56,6 +57,7 @@ const reactions = [
 const notice = ref('');
 const currentMr = ref('');
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+let hydratedDiffKey = '';
 
 const fileName = (file: any) => file?.new_file ? file.new_path : file?.deleted_file ? file.old_path : file?.new_path;
 const ownerRules = computed(() => app.review.value?.codeowners || []);
@@ -71,19 +73,36 @@ function matchOwner(filePath: string) {
 const eligibleFiles = computed(() => app.files.value.filter(file => {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) return false;
   if (!onlyMine.value) return true;
-  return matchOwner(fileName(file)) !== false;
+  return matchOwner(fileName(file)) === true;
 }));
 const activeFile = computed(() => app.selected.value);
 const displayedFiles = computed(() => eligibleFiles.value);
 const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFiles.value[fileName(activeFile.value)]));
+const lineCountCache = new WeakMap<object, number>();
+function changedLineCount(file: any): number {
+  const cached = lineCountCache.get(file);
+  if (cached !== undefined) return cached;
+  const count = (file.diff.match(/^(?:\+(?!\+)|-(?!--))/gm) || []).length;
+  lineCountCache.set(file, count);
+  return count;
+}
 const reviewedCount = computed(() => app.files.value.filter(file => app.reviewed.value[fileName(file)] === file.identity && file.identity).length);
-const progress = computed(() => app.files.value.length ? Math.round(reviewedCount.value * 100 / app.files.value.length) : 0);
+const progressSegments = computed(() => app.files.value.map(file => {
+  const path = fileName(file);
+  const changedLines = changedLineCount(file);
+  return { file, path, changedLines, weight: Math.max(1, changedLines), reviewed: isReviewed(file) };
+}));
+const totalProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + segment.weight, 0));
+const reviewedProgressWeight = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.weight : 0), 0));
+const totalChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + segment.changedLines, 0));
+const reviewedChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.changedLines : 0), 0));
+const progress = computed(() => totalProgressWeight.value ? Math.round(reviewedProgressWeight.value * 100 / totalProgressWeight.value) : 0);
 const discussionList = computed(() => app.review.value?.discussions || []);
 const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
-const hasUnknownOwner = computed(() => !!app.review.value?.ownerWarning || eligibleFiles.value.some(file => matchOwner(fileName(file)) === null));
+const hasUnknownOwner = computed(() => !app.ownershipPending.value && eligibleFiles.value.some(file => matchOwner(fileName(file)) === null));
 
 function renderMarkdown(source: string) {
   if (!import.meta.client || !app.mrUrl.value) return source;
@@ -116,6 +135,13 @@ function setFile(file: any) {
     document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
     document.querySelector('.diff-shell.code-view')?.scrollTo({ top: 0 });
   }
+}
+function openProgressSegment(file: any) {
+  if (!eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) {
+    onlyMine.value = false;
+    query.value = '';
+  }
+  setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
 function toggleReviewed() {
@@ -288,6 +314,10 @@ async function refreshReview(force = false) {
   } else if (previousDiffIdentity && nextDiffIdentity !== previousDiffIdentity) {
     expandedFiles.value = {};
   }
+  if (previousDiffIdentity && nextDiffIdentity !== previousDiffIdentity) {
+    await nextTick();
+    scheduleReviewSupplementals(false);
+  }
 }
 function onVisibility() { if (!document.hidden) void refreshReview(); }
 function showSummary(intent: 'summary' | 'changes') { summaryIntent.value = intent; summary.value = app.drafts.value['mr:summary'] || ''; summaryOpen.value = true; }
@@ -317,9 +347,28 @@ function parseInitialUrl() {
   const params = new URLSearchParams(location.search);
   return params.get('mr') || '';
 }
+function loadReviewSupplementals(refresh = true) {
+  const review = app.review.value;
+  if (!review) return;
+  const key = `${app.mrUrl.value}:${review.mr.sha}:${review.mr.diff_refs?.base_sha || ''}:${review.mr.diff_refs?.head_sha || ''}`;
+  if (key === hydratedDiffKey) return;
+  hydratedDiffKey = key;
+  void app.verifyOwnership();
+  void app.hydrateIdentities().catch(() => {});
+  if (refresh) void app.refresh(true);
+}
+function scheduleReviewSupplementals(refresh = true) {
+  requestAnimationFrame(() => requestAnimationFrame(() => loadReviewSupplementals(refresh)));
+}
 async function start(url: string) {
   currentMr.value = url;
-  try { await app.bootstrap(url); if (previewOpen.value) void discoverPreview(); }
+  void loadPierreDiff().catch(() => {});
+  try {
+    await app.bootstrap(url);
+    if (previewOpen.value) void discoverPreview();
+    await nextTick();
+    scheduleReviewSupplementals();
+  }
   catch { /* error is shown in the header */ }
 }
 onMounted(() => {
@@ -370,14 +419,14 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
       <template v-if="app.review.value">
         <div class="mr-heading"><strong>{{ app.review.value.mr.title }}</strong><span class="review-state">{{ reviewerState.replaceAll('_', ' ') }}</span><button class="quiet" @click="descriptionOpen = !descriptionOpen">{{ descriptionOpen ? 'Hide details' : 'Details' }}</button></div>
         <div class="top-actions">
-          <span class="progress-label">{{ reviewedCount }}/{{ app.files.value.length }} reviewed</span>
+          <span class="progress-label" :title="`${reviewedCount} of ${app.files.value.length} files reviewed; progress is weighted by returned diff lines, with unavailable diffs counted as one segment`">{{ reviewedCount }}/{{ app.files.value.length }} · {{ progress }}%</span>
           <button class="quiet" :disabled="app.busy.value" @click="refreshReview(true)">↻ Refresh</button>
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
-          <button class="quiet" @click="showSummary('summary')">Summary</button>
-          <button class="quiet" @click="showSummary('changes')">Request changes</button>
           <details ref="actionMenu" class="action-menu">
             <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
             <div class="action-menu-popover">
+              <button class="quiet" @click="closeActionMenu(); showSummary('summary')">Summary</button>
+              <button class="quiet" @click="closeActionMenu(); showSummary('changes')">Request changes</button>
               <button class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('unapprove')">Unapprove</button>
               <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeActionMenu(); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
               <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('ready')">Mark ready</button>
@@ -387,19 +436,26 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <a class="quiet external" :href="app.review.value.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
           <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
         </div>
-        <div class="progress-track"><span :style="{ width: `${progress}%` }" /></div>
+        <span class="progress-sr-only" role="progressbar" aria-label="Review progress weighted by diff size" :aria-valuemin="0" :aria-valuemax="100" :aria-valuenow="progress" :aria-valuetext="`${reviewedCount} of ${app.files.value.length} files reviewed; ${reviewedChangedLines} of ${totalChangedLines} returned changed lines reviewed`" />
+        <div class="progress-track" role="group" aria-label="Changed files; select a segment to open its diff">
+          <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === app.selectedPath.value }" :style="{ flexGrow: segment.weight }" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}; ${segment.changedLines} changed lines`" :aria-current="segment.path === app.selectedPath.value ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" @click="openProgressSegment(segment.file)" />
+        </div>
       </template>
-      <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL"><button class="approve">Open review</button></form>
     </header>
+    <div v-if="app.busy.value && !app.review.value" class="loading-state" role="status" aria-live="polite" aria-busy="true">
+      <span class="loading-spinner" aria-hidden="true" />
+      <span>Loading merge request…</span>
+    </div>
+    <div v-else-if="!app.review.value && !app.error.value" class="empty-state">Launch a review with <code>mpeek &lt;merge-request-url&gt;</code>.</div>
     <!-- eslint-disable-next-line vue/no-v-html -->
     <div v-if="app.review.value?.mr.description && descriptionOpen" class="description" v-html="renderMarkdown(app.review.value.mr.description)" />
-    <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button @click="app.error.value = ''">Dismiss</button></div>
+    <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button v-if="!app.review.value && currentMr" class="quiet" :disabled="app.busy.value" @click="start(currentMr)">Retry</button><button @click="app.error.value = ''">Dismiss</button></div>
     <div v-if="notice" class="notice" role="status" @click="notice = ''">{{ notice }} <button aria-label="Dismiss" @click.stop="notice = ''">×</button></div>
     <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen }" :style="{ '--preview-width': `${previewWidth}px` }">
       <aside class="file-sidebar">
         <div class="sidebar-title"><span>CHANGES</span><span>{{ app.files.value.length }}</span></div>
         <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
-        <label class="filter-toggle"><input v-model="onlyMine" type="checkbox"> Only my files</label>
+        <label class="filter-toggle"><input v-model="onlyMine" type="checkbox" :disabled="app.ownershipPending.value || Boolean(app.review.value.ownerWarning)"> Only my files</label>
         <div v-if="app.review.value.ownerWarning" class="owner-warning">{{ app.review.value.ownerWarning }}</div>
         <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay visible.</div>
         <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
@@ -415,20 +471,42 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <div v-if="app.busy.value && !activeFile" class="empty-state">Loading merge request…</div>
         <template v-else-if="activeFile">
           <div class="file-toolbar">
-            <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-            <div class="file-actions"><button class="quiet" @click="navigate(-1)">← Previous</button><button class="quiet" @click="navigate(1)">Next unreviewed →</button><button class="quiet" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button><label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label><span class="toolbar-rule"/><button class="quiet" :class="{ chosen: mode === 'split' }" @click="mode = 'split'">Split</button><button class="quiet" :class="{ chosen: mode === 'unified' }" @click="mode = 'unified'">Unified</button><label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap</label><label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous</label></div>
+            <div class="file-heading">
+              <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
+              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
+            </div>
+            <div class="file-actions">
+              <div class="review-actions">
+                <button class="quiet previous-file" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
+                <button class="quiet" aria-label="Next unreviewed file" @click="navigate(1)">Next unreviewed →</button>
+                <label class="wrap-toggle auto-advance"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
+              </div>
+              <div class="view-actions">
+                <div class="segmented-control" role="group" aria-label="Diff layout">
+                  <button :aria-pressed="mode === 'split'" @click="mode = 'split'">Split</button>
+                  <button :aria-pressed="mode === 'unified'" @click="mode = 'unified'">Unified</button>
+                </div>
+                <details class="display-menu">
+                  <summary class="quiet">View</summary>
+                  <div class="display-popover">
+                    <label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap lines</label>
+                    <label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous files</label>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
           <div v-if="(activeFile.collapsed || activeFile.too_large) && !expandedFiles[fileName(activeFile)]" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
           <div class="diff-scroll">
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
-              <article v-for="file in displayedFiles" :key="file.new_path + file.identity" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
+              <article v-for="file in displayedFiles" :key="file.new_path" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">Comment on file</button></header>
-                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path + activeFile.identity" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>
@@ -475,3 +553,36 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
     <div v-if="summaryOpen" class="modal-backdrop" @click.self="summaryOpen = false"><form class="modal" @submit.prevent="sendSummary"><h2>{{ summaryIntent === 'changes' ? 'Request changes' : 'Post a review summary' }}</h2><textarea v-model="summary" rows="7" :placeholder="summaryIntent === 'changes' ? 'Explain the changes you are requesting…' : 'Share an overall review note…'"/><div class="modal-actions"><button type="button" class="quiet" @click="summaryOpen = false">Cancel</button><button class="approve">{{ summaryIntent === 'changes' ? 'Post change request' : 'Post summary' }}</button></div></form></div>
   </main>
 </template>
+
+<style scoped>
+.loading-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.loading-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loading-spin 800ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+    border-top-color: transparent;
+    border-left-color: var(--accent);
+  }
+}
+</style>

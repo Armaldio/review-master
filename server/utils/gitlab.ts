@@ -1,9 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { H3Event } from 'h3';
 
 const execFileAsync = promisify(execFile);
+const GITLAB_USER_CACHE_TTL = 60_000;
+const GITLAB_USER_CACHE_LIMIT = 128;
+const gitLabUserCache = new Map<string, { user: any; expiresAt: number }>();
+const gitLabUserRequests = new Map<string, Promise<any | null>>();
 
 export type MergeRequestUrl = { host: string; projectPath: string; iid: string; encodedProject: string };
 export type Account = { host: string; token: string; username: string; name?: string };
@@ -72,14 +77,43 @@ export async function resolveGitLabToken(host: string, legacyToken?: string, run
   });
 }
 
+async function gitLabUser(host: string, token: string): Promise<any | null> {
+  const key = createHash('sha256').update(host).update('\0').update(token).digest('hex');
+  const cached = gitLabUserCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+  if (cached) gitLabUserCache.delete(key);
+  const pending = gitLabUserRequests.get(key);
+  if (pending) return pending;
+
+  const request = (async () => {
+    try {
+      const response = await fetch(`${host}/api/v4/user`, {
+        headers: { Authorization: `Bearer ${token}` },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok ? await response.json() : null;
+    } catch { return null; }
+  })();
+  gitLabUserRequests.set(key, request);
+  try {
+    const user = await request;
+    if (user) {
+      if (gitLabUserCache.size >= GITLAB_USER_CACHE_LIMIT) {
+        const oldest = gitLabUserCache.keys().next().value;
+        if (oldest) gitLabUserCache.delete(oldest);
+      }
+      gitLabUserCache.set(key, { user, expiresAt: Date.now() + GITLAB_USER_CACHE_TTL });
+    }
+    return user;
+  } finally {
+    if (gitLabUserRequests.get(key) === request) gitLabUserRequests.delete(key);
+  }
+}
+
 async function verifyGitLabToken(host: string, token: string): Promise<boolean> {
   try {
-    const response = await fetch(`${host}/api/v4/user`, {
-      headers: { Authorization: `Bearer ${token}` },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(10_000),
-    });
-    return response.ok;
+    return Boolean(await gitLabUser(host, token));
   } catch { return false; }
 }
 
@@ -95,8 +129,13 @@ export async function getGitLabContext(event: H3Event, value: string) {
   try { legacyAccount = (await getAccounts()).find(item => item.host === mr.host); }
   catch { /* glab authentication remains usable when old account metadata is unreadable. */ }
   const token = await resolveGitLabToken(mr.host, legacyAccount?.token);
+  const user = await gitLabUser(mr.host, token);
+  if (!user) {
+    const hostname = new URL(mr.host).host;
+    throw createError({ statusCode: 503, statusMessage: `No GitLab authentication found for ${hostname}. Run glab auth login --hostname ${hostname} and try again.` });
+  }
   const account: Account = { host: mr.host, token, username: legacyAccount?.username || '', ...(legacyAccount?.name ? { name: legacyAccount.name } : {}) };
-  return { mr, account, base: `${mr.host}/api/v4/projects/${mr.encodedProject}/merge_requests/${mr.iid}` };
+  return { mr, account, user, base: `${mr.host}/api/v4/projects/${mr.encodedProject}/merge_requests/${mr.iid}` };
 }
 
 export async function gitlab<T>(url: string, token: string, init: RequestInit = {}): Promise<T> {
