@@ -168,7 +168,8 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.getByLabel('Find a file').fill('src/');
   assert.equal(await page.locator('.file-row').count(), 0, 'search cannot reveal an unverified file');
   assert.equal(await page.locator('.path-label strong').count(), 0, 'the diff pane hides the previously selected file when search excludes it');
-  await page.getByLabel('Find a file').fill('');
+  await page.locator('.progress-segment').first().click();
+  assert.equal(await page.getByLabel('Find a file').inputValue(), '', 'opening a visible progress segment clears a search that hid its file');
   assert.equal(await page.locator('.path-label strong').innerText(), 'doc/releases/19/release.md');
   await page.getByRole('button', { name: 'Use directory tree' }).click();
   assert.equal(await page.locator('.file-row').count(), 1, 'tree view uses the same owner filter');

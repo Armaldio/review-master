@@ -7,7 +7,7 @@ test('relative CODEOWNERS globstars match below repository root', () => {
   assert.equal(globMatches('/releases/**/*.md', 'doc/releases/19/release.md'), false);
 });
 
-test('the last matching entry wins within each CODEOWNERS section', () => {
+test('a section exclusion blocks all later matching entries in that section', () => {
   const rules = [
     { pattern: '**', owners: ['@maintainers'], section: 'Maintainers' },
     { pattern: 'doc/releases/**', owners: ['@docs'], section: 'Docs' },
@@ -21,12 +21,24 @@ test('the last matching entry wins within each CODEOWNERS section', () => {
   });
   assert.deepEqual(codeownersForPath(rules, 'doc/releases/private/restore.md'), {
     matched: true,
-    owners: ['@maintainers', '@later'],
+    owners: ['@maintainers'],
   });
   assert.deepEqual(codeownersForPath(rules, 'doc/releases/private/other.md'), {
     matched: true,
     owners: ['@maintainers'],
   });
+});
+
+test('section names differing only by case share the same matching rules', () => {
+  const { rules } = parseCodeowners([
+    '[Docs]',
+    'docs/** @docs',
+    '[dOcS]',
+    'docs/private/** @security',
+  ].join('\n'));
+
+  assert.deepEqual(codeownersForPath(rules, 'docs/guide.md'), { matched: true, owners: ['@docs'] });
+  assert.deepEqual(codeownersForPath(rules, 'docs/private/secret.md'), { matched: true, owners: ['@security'] });
 });
 
 test('section default owners stay scoped to matching patterns in their section', () => {

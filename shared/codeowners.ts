@@ -32,7 +32,8 @@ export function codeownersForPath(rules: CodeownerRule[], path: string) {
   const bySection = new Map<string, { rule?: CodeownerRule; excluded: boolean }>();
   for (const rule of rules) {
     if (!globMatches(rule.pattern, path)) continue;
-    const section = rule.section || '';
+    const section = (rule.section || '').toLowerCase();
+    if (bySection.get(section)?.excluded) continue;
     if (rule.exclude) bySection.set(section, { excluded: true });
     else bySection.set(section, { rule, excluded: false });
   }

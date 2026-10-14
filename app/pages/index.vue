@@ -144,7 +144,8 @@ function setFile(file: any) {
   }
 }
 function openProgressSegment(file: any) {
-  if (!showAll.value && !eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) return;
+  if (!showAll.value && matchOwner(fileName(file)) !== true) return;
+  if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
   setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
