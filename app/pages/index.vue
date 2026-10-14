@@ -416,12 +416,15 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === app.selectedPath.value }" :style="{ flexGrow: segment.weight }" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}; ${segment.changedLines} changed lines`" :aria-current="segment.path === app.selectedPath.value ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" @click="openProgressSegment(segment.file)" />
         </div>
       </template>
-      <form v-else class="url-form" @submit.prevent="start(currentMr)"><input v-model="currentMr" aria-label="Merge request URL" placeholder="Paste a GitLab merge request URL" :disabled="app.busy.value"><button class="approve" :disabled="app.busy.value">{{ app.busy.value ? 'Loading review…' : 'Open review' }}</button></form>
     </header>
-    <div v-if="app.busy.value && !app.review.value" class="empty-state" role="status">Loading merge request…</div>
+    <div v-if="app.busy.value && !app.review.value" class="loading-state" role="status" aria-live="polite" aria-busy="true">
+      <span class="loading-spinner" aria-hidden="true" />
+      <span>Loading merge request…</span>
+    </div>
+    <div v-else-if="!app.review.value && !app.error.value" class="empty-state">Launch a review with <code>mpeek &lt;merge-request-url&gt;</code>.</div>
     <!-- eslint-disable-next-line vue/no-v-html -->
     <div v-if="app.review.value?.mr.description && descriptionOpen" class="description" v-html="renderMarkdown(app.review.value.mr.description)" />
-    <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button @click="app.error.value = ''">Dismiss</button></div>
+    <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button v-if="!app.review.value && currentMr" class="quiet" :disabled="app.busy.value" @click="start(currentMr)">Retry</button><button @click="app.error.value = ''">Dismiss</button></div>
     <div v-if="notice" class="notice" role="status" @click="notice = ''">{{ notice }} <button aria-label="Dismiss" @click.stop="notice = ''">×</button></div>
     <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen }" :style="{ '--preview-width': `${previewWidth}px` }">
       <aside class="file-sidebar">
@@ -525,3 +528,36 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
     <div v-if="summaryOpen" class="modal-backdrop" @click.self="summaryOpen = false"><form class="modal" @submit.prevent="sendSummary"><h2>{{ summaryIntent === 'changes' ? 'Request changes' : 'Post a review summary' }}</h2><textarea v-model="summary" rows="7" :placeholder="summaryIntent === 'changes' ? 'Explain the changes you are requesting…' : 'Share an overall review note…'"/><div class="modal-actions"><button type="button" class="quiet" @click="summaryOpen = false">Cancel</button><button class="approve">{{ summaryIntent === 'changes' ? 'Post change request' : 'Post summary' }}</button></div></form></div>
   </main>
 </template>
+
+<style scoped>
+.loading-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.loading-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loading-spin 800ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+    border-top-color: transparent;
+    border-left-color: var(--accent);
+  }
+}
+</style>
