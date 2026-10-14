@@ -1,15 +1,12 @@
-import { createHash } from 'node:crypto';
 import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '../utils/gitlab.ts';
 import { logReviewActivity } from '../utils/review-activity.ts';
-import { codeownersForPath } from '../../shared/codeowners.ts';
+import { readMembership, writeMembership, deleteMembership } from '../utils/membership-cache.ts';
+import { codeownersForPath, parseCodeowners } from '../../shared/codeowners.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
 const json = (value: unknown) => JSON.stringify(value);
-const OWNER_STATUS_CACHE_TTL = 60_000;
-const OWNER_STATUS_CACHE_LIMIT = 512;
-const ownerStatusCache = new Map<string, { status: boolean; expiresAt: number }>();
-const ownerStatusRequests = new Map<string, Promise<boolean | null>>();
+const ownerMembershipRequests = new Map<string, Promise<{ accessLevel: number; checkedAt: string } | null>>();
 
 export default defineEventHandler(async event => {
   const body = await readBody<{ mrUrl?: string; action?: string; payload?: Record<string, any> }>(event);
@@ -50,13 +47,14 @@ export default defineEventHandler(async event => {
         ? [...new Set(body.payload.paths.filter((path): path is string => typeof path === 'string' && path.length <= 4096).slice(0, 1000))]
         : [];
       const targetBranch = typeof body.payload?.targetBranch === 'string' ? body.payload.targetBranch : '';
+      const refreshMemberships = body.payload?.refreshMemberships === true;
       const [projectInfo, owners] = await Promise.all([
         gitlab<any>(project, token),
         targetBranch ? loadCodeowners(project, targetBranch, token) : Promise.resolve({ rules: [], warning: 'CODEOWNERS could not be verified; showing all files.' }),
       ]);
       const relevantOwners = [...new Set(paths.flatMap(path => codeownersForPath(owners.rules, path).owners))];
-      const ownership = await verifyOwners(relevantOwners, user, projectInfo, token, mr.host);
-      return { codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning };
+      const ownership = await verifyOwners(relevantOwners, user, projectInfo, token, mr.host, refreshMemberships);
+      return { codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning, membershipCheckedAt: ownership.membershipCheckedAt };
     }
     case 'refresh': {
       const [info, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
@@ -193,71 +191,47 @@ async function loadCodeowners(project: string, targetBranch: string, token: stri
   return { rules: [], warning: 'No CODEOWNERS file found on the target branch.' };
 }
 
-function parseCodeowners(source: string) {
-  const rules: { pattern: string; owners: string[]; section?: string; exclude?: boolean }[] = [];
-  let section = '';
-  let sectionOwners: string[] = [];
-  try {
-    for (const raw of source.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith('#')) continue;
-      const heading = line.match(/^\^?\[([^\]]+)\](?:\[\d+\])?(?:\s+(.+))?$/);
-      if (heading) {
-        section = heading[1]!.trim();
-        sectionOwners = heading[2]?.trim().split(/\s+/) || [];
-        continue;
-      }
-      const parts = line.split(/\s+/);
-      const pattern = parts.shift()!;
-      if (pattern.startsWith('!')) {
-        if (pattern.length === 1 || parts.length) return { rules: [], warning: 'CODEOWNERS contains unsupported syntax; showing all files.' };
-        rules.push({ pattern: pattern.slice(1), owners: [], exclude: true, ...(section ? { section } : {}) });
-      } else {
-        rules.push({ pattern, owners: parts.length ? parts : sectionOwners, ...(section ? { section } : {}) });
-      }
-    }
-    return { rules };
-  } catch { return { rules: [], warning: 'CODEOWNERS could not be parsed; showing all files.' }; }
-}
+function normalizeGroupPath(path: string) { return path.replace(/^@/, '').trim().replace(/^\/+|\/+$/g, '').toLowerCase(); }
 
-async function groupOwnerStatus(groupPath: string, userId: number, requiredLevel: number, token: string, host: string): Promise<boolean | null> {
-  const key = createHash('sha256')
-    .update(host).update('\0').update(token).update('\0').update(String(userId)).update('\0').update(groupPath).update('\0').update(String(requiredLevel))
-    .digest('hex');
-  const cached = ownerStatusCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.status;
-  if (cached) ownerStatusCache.delete(key);
-  const pending = ownerStatusRequests.get(key);
+async function groupOwnerMembership(groupPath: string, userId: number, token: string, host: string, refresh: boolean) {
+  const normalizedPath = normalizeGroupPath(groupPath);
+  if (!normalizedPath) return null;
+  if (!refresh) {
+    const cached = await readMembership(host, userId, normalizedPath);
+    if (cached) return cached;
+  }
+  const key = `${host}\0${userId}\0${normalizedPath}`;
+  const pending = ownerMembershipRequests.get(key);
   if (pending) return pending;
 
   const request = (async () => {
     try {
-      const response = await fetch(`${host}/api/v4/groups/${encodeURIComponent(groupPath)}/members/all/${encodeURIComponent(String(userId))}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
-      if (response.status === 404) return false;
+      const response = await fetch(`${host}/api/v4/groups/${encodeURIComponent(normalizedPath)}/members/all/${encodeURIComponent(String(userId))}`, { headers: { Authorization: `Bearer ${token}` }, redirect: 'manual' });
+      // A 404 can mean either no membership or an inaccessible/missing group, so it is not cacheable evidence.
       if (!response.ok) return null;
       const member = await response.json() as { access_level?: number };
-      return typeof member.access_level === 'number' ? member.access_level >= requiredLevel : null;
+      if (!Number.isInteger(member.access_level) || member.access_level! <= 0) return null;
+      const checkedAt = new Date().toISOString();
+      await writeMembership(host, userId, normalizedPath, member.access_level!);
+      return { accessLevel: member.access_level!, checkedAt };
     } catch { return null; }
   })();
-  ownerStatusRequests.set(key, request);
-  try {
-    const status = await request;
-    if (status !== null) {
-      if (ownerStatusCache.size >= OWNER_STATUS_CACHE_LIMIT) {
-        const oldest = ownerStatusCache.keys().next().value;
-        if (oldest) ownerStatusCache.delete(oldest);
-      }
-      ownerStatusCache.set(key, { status, expiresAt: Date.now() + OWNER_STATUS_CACHE_TTL });
-    }
-    return status;
-  } finally {
-    if (ownerStatusRequests.get(key) === request) ownerStatusRequests.delete(key);
-  }
+  ownerMembershipRequests.set(key, request);
+  try { return await request; }
+  finally { if (ownerMembershipRequests.get(key) === request) ownerMembershipRequests.delete(key); }
 }
 
-async function verifyOwners(owners: string[], user: any, project: any, token: string, host: string) {
+async function verifyOwners(owners: string[], user: any, project: any, token: string, host: string, refreshMemberships = false) {
   const roles: Record<string, number> = { guest: 10, planner: 15, reporter: 20, developer: 30, maintainer: 40, owner: 50 };
   const roleLevel = project.permissions?.project_access?.access_level || project.permissions?.group_access?.access_level || 0;
+  const groupPaths = [...new Set(owners.flatMap(owner => {
+    if (!owner.startsWith('@') || owner.startsWith('@@')) return [];
+    const groupRole = owner.match(/^@(.+)%([a-z]+)$/i);
+    const normalized = normalizeGroupPath(groupRole?.[1] || owner);
+    return !groupRole && normalized === String(user.username).toLowerCase() ? [] : normalized ? [normalized] : [];
+  }))];
+  if (refreshMemberships) await Promise.all(groupPaths.map(groupPath => deleteMembership(host, Number(user.id), groupPath)));
+  const checkedAtByGroup = new Map<string, string>();
   const results = await mapLimit([...new Set(owners)], 12, async owner => {
     const normalized = owner.replace(/^@/, '').toLowerCase();
     if (!owner.startsWith('@')) return [owner, user.email ? user.email.toLowerCase() === normalized : null] as const;
@@ -270,9 +244,12 @@ async function verifyOwners(owners: string[], user: any, project: any, token: st
     const groupPath = groupRole?.[1] || normalized;
     const requiredLevel = groupRole ? roles[groupRole[2]!.toLowerCase()] : 0;
     if (groupRole && !requiredLevel) return [owner, null] as const;
-    return [owner, await groupOwnerStatus(groupPath, Number(user.id), requiredLevel || 0, token, host)] as const;
+    const membership = await groupOwnerMembership(groupPath, Number(user.id), token, host, refreshMemberships);
+    if (membership) checkedAtByGroup.set(normalizeGroupPath(groupPath), membership.checkedAt);
+    return [owner, membership ? membership.accessLevel >= (requiredLevel || 0) : null] as const;
   });
   const status: Record<string, boolean | null> = {};
   for (const [owner, value] of results) status[owner] = value;
-  return { status };
+  const membershipCheckedAt = [...checkedAtByGroup.values()].sort().at(-1) || null;
+  return { status, membershipCheckedAt };
 }

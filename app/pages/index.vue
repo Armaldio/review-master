@@ -15,7 +15,7 @@ const continuousRoot = ref<HTMLElement | null>(null);
 const continuousVisible = ref(new Set<string>());
 let continuousObserver: IntersectionObserver | undefined;
 const tree = ref(false);
-const onlyMine = ref(false);
+const showAll = ref(false);
 const query = ref('');
 const descriptionOpen = ref(false);
 const previewOpen = ref(false);
@@ -67,15 +67,16 @@ function matchOwner(filePath: string) {
   if (!matched.matched) return ownerRules.value.length ? false : null;
   if (!matched.owners.length) return false;
   const status = app.review.value.ownerStatus || {};
+  if (matched.owners.some(owner => status[owner] === true)) return true;
   if (matched.owners.some(owner => status[owner] === null || status[owner] === undefined)) return null;
-  return matched.owners.some(owner => status[owner] === true);
+  return false;
 }
 const eligibleFiles = computed(() => app.files.value.filter(file => {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) return false;
-  if (!onlyMine.value) return true;
+  if (showAll.value) return true;
   return matchOwner(fileName(file)) === true;
 }));
-const activeFile = computed(() => app.selected.value);
+const activeFile = computed(() => eligibleFiles.value.find(file => fileName(file) === app.selectedPath.value) ?? eligibleFiles.value[0] ?? null);
 const displayedFiles = computed(() => eligibleFiles.value);
 const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFiles.value[fileName(activeFile.value)]));
 const lineCountCache = new WeakMap<object, number>();
@@ -102,7 +103,12 @@ const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
-const hasUnknownOwner = computed(() => !app.ownershipPending.value && eligibleFiles.value.some(file => matchOwner(fileName(file)) === null));
+const hasUnknownOwner = computed(() => !app.ownershipPending.value && app.files.value.some(file => matchOwner(fileName(file)) === null));
+const membershipCheckedLabel = computed(() => {
+  const value = app.membershipCheckedAt.value;
+  if (!value || !Number.isFinite(Date.parse(value))) return '';
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+});
 
 function renderMarkdown(source: string) {
   if (!import.meta.client || !app.mrUrl.value) return source;
@@ -128,6 +134,7 @@ function renderMarkdown(source: string) {
 }
 
 function setFile(file: any) {
+  if (!showAll.value && !eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) return;
   app.selectedPath.value = fileName(file);
   const key = `comment:${fileName(file)}`;
   comment.value = app.drafts.value[key] || '';
@@ -137,10 +144,7 @@ function setFile(file: any) {
   }
 }
 function openProgressSegment(file: any) {
-  if (!eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) {
-    onlyMine.value = false;
-    query.value = '';
-  }
+  if (!showAll.value && !eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) return;
   setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
@@ -429,6 +433,8 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
               <button class="quiet" @click="closeActionMenu(); showSummary('changes')">Request changes</button>
               <button class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('unapprove')">Unapprove</button>
               <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeActionMenu(); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
+              <button class="quiet" :disabled="app.ownershipPending.value" @click="closeActionMenu(); app.refreshMemberships()">Refresh memberships</button>
+              <span v-if="membershipCheckedLabel" class="membership-meta">Memberships checked {{ membershipCheckedLabel }}</span>
               <button v-if="app.review.value.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeActionMenu(); mrAction('ready')">Mark ready</button>
             </div>
           </details>
@@ -438,7 +444,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         </div>
         <span class="progress-sr-only" role="progressbar" aria-label="Review progress weighted by diff size" :aria-valuemin="0" :aria-valuemax="100" :aria-valuenow="progress" :aria-valuetext="`${reviewedCount} of ${app.files.value.length} files reviewed; ${reviewedChangedLines} of ${totalChangedLines} returned changed lines reviewed`" />
         <div class="progress-track" role="group" aria-label="Changed files; select a segment to open its diff">
-          <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === app.selectedPath.value }" :style="{ flexGrow: segment.weight }" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}; ${segment.changedLines} changed lines`" :aria-current="segment.path === app.selectedPath.value ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}`" @click="openProgressSegment(segment.file)" />
+          <button v-for="segment in progressSegments" :key="segment.path" type="button" class="progress-segment" :class="{ reviewed: segment.reviewed, selected: segment.path === fileName(activeFile), filtered: !showAll && matchOwner(segment.path) !== true }" :style="{ flexGrow: segment.weight }" :disabled="!showAll && matchOwner(segment.path) !== true" :aria-disabled="!showAll && matchOwner(segment.path) !== true" :aria-label="`Open ${segment.path}; ${segment.reviewed ? 'reviewed' : 'not reviewed'}${!showAll && matchOwner(segment.path) !== true ? '; hidden by owner filter' : ''}; ${segment.changedLines} changed lines`" :aria-current="segment.path === fileName(activeFile) ? 'page' : undefined" :title="`${segment.path} · ${segment.changedLines ? `${segment.changedLines} changed lines` : 'diff size unavailable'} · ${segment.reviewed ? 'reviewed' : 'not reviewed'}${!showAll && matchOwner(segment.path) !== true ? ' · hidden by owner filter' : ''}`" @click="openProgressSegment(segment.file)" />
         </div>
       </template>
     </header>
@@ -455,9 +461,9 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
       <aside class="file-sidebar">
         <div class="sidebar-title"><span>CHANGES</span><span>{{ app.files.value.length }}</span></div>
         <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
-        <label class="filter-toggle"><input v-model="onlyMine" type="checkbox" :disabled="app.ownershipPending.value || Boolean(app.review.value.ownerWarning)"> Only my files</label>
-        <div v-if="app.review.value.ownerWarning" class="owner-warning">{{ app.review.value.ownerWarning }}</div>
-        <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay visible.</div>
+        <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
+        <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
+        <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
         <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
         <nav class="file-list" aria-label="Changed files">
           <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
@@ -539,7 +545,11 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add a file comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
           </div>
         </template>
-        <div v-else class="empty-state">No changed files were returned by GitLab.</div>
+        <div v-else class="empty-state">
+          <template v-if="app.files.value.length && !showAll">No files are visible in this owner scope. Use Show all files to review every changed file.</template>
+          <template v-else-if="app.files.value.length">No files match the current search.</template>
+          <template v-else>No changed files were returned by GitLab.</template>
+        </div>
       </section>
       <aside v-if="previewOpen" class="preview-pane">
         <button class="preview-resize" aria-label="Resize preview panel" @pointerdown.prevent="startPreviewResize" @keydown.left.prevent="resizePreviewBy(24)" @keydown.right.prevent="resizePreviewBy(-24)" />
@@ -555,6 +565,17 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
 </template>
 
 <style scoped>
+.membership-meta {
+  padding: 2px 9px 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.progress-segment.filtered {
+  opacity: .2;
+  cursor: not-allowed;
+}
+
 .loading-state {
   flex: 1;
   min-height: 0;

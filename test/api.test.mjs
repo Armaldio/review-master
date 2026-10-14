@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,9 +48,10 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
 
   const requests = [];
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
-  const codeownersFile = '[Maintainers] @reviewer another@example.com @nested/team @missing-group\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
+  let codeownersFile = '[Maintainers] @reviewer another@example.com @nested/team @nested/team%developer @nested/team%maintainer @missing-group\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
   let currentSha = 'head';
   let currentDiscussions = [];
+  let nestedAccessLevel = 30;
   let cliLogs = '';
   const originalWrite = process.stdout.write;
   process.stdout.write = function (chunk) {
@@ -61,7 +63,7 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     requests.push({ path: url.pathname, method: init.method || 'GET', body: init.body && JSON.parse(init.body) });
-    if (url.pathname.endsWith('/groups/nested%2Fteam/members/all/5')) return new Response(JSON.stringify({ id: 5, access_level: 30 }), { status: 200 });
+    if (url.pathname.endsWith('/groups/nested%2Fteam/members/all/5')) return new Response(JSON.stringify({ id: 5, access_level: nestedAccessLevel }), { status: 200 });
     if (url.pathname.endsWith('/groups/missing-group/members/all/5')) return new Response('', { status: 404 });
     const payload = url.pathname.endsWith('/merge_requests/7') ? { id: 77, iid: 7, title: 'Draft MR', draft: true, sha: currentSha, diff_refs: {} }
       : url.pathname.endsWith('/api/v4/user') ? { id: 5, username: 'reviewer', name: 'Reviewer', email: 'reviewer@example.com' }
@@ -100,10 +102,22 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   assert.equal(ownerStatus['@reviewer'], true);
   assert.equal(ownerStatus['another@example.com'], false, 'another email owner is not an unverifiable match');
   assert.equal(ownerStatus['@nested/team'], true, 'inherited group membership is checked by user ID');
-  assert.equal(ownerStatus['@missing-group'], false, 'a 404 membership response means the reviewer is not an owner');
-  assert.ok(Object.values(ownerStatus).every(status => status !== null), 'known non-matches do not trigger an unknown-owner warning');
+  assert.equal(ownerStatus['@nested/team%developer'], true, 'the cached numeric access level satisfies the developer threshold');
+  assert.equal(ownerStatus['@nested/team%maintainer'], false, 'the same cached numeric access level fails a maintainer threshold');
+  assert.equal(ownerStatus['@missing-group'], null, 'a 404 cannot distinguish nonmembership from inaccessible group data');
+  const membershipRequests = () => requests.filter(request => request.path.includes('/groups/') && request.path.includes('/members/all/'));
+  assert.ok(Number.isFinite(Date.parse(ownership.membershipCheckedAt)), 'confirmed memberships report when they were last checked');
+  assert.equal(membershipRequests().length, 2);
   assert.ok(requests.some(request => request.path.endsWith('/groups/nested%2Fteam/members/all/5')));
   assert.ok(!requests.some(request => request.path.includes('/groups/unused%2Fgroup/members/all/5')), 'only owners that apply to changed paths are checked');
+  await call('verify-owners', { paths: ['a.ts'], targetBranch: 'main' });
+  assert.equal(membershipRequests().filter(request => request.path.endsWith('/groups/nested%2Fteam/members/all/5')).length, 1, 'a confirmed access level is reused from disk');
+  assert.equal(membershipRequests().filter(request => request.path.endsWith('/groups/missing-group/members/all/5')).length, 2, 'an ambiguous 404 is not cached');
+  nestedAccessLevel = 40;
+  const refreshedMemberships = await call('verify-owners', { paths: ['a.ts'], targetBranch: 'main', refreshMemberships: true });
+  assert.equal(refreshedMemberships.ownerStatus['@nested/team%maintainer'], true, 'manual refresh updates the stored effective access level after a membership change');
+  assert.equal(membershipRequests().filter(request => request.path.endsWith('/groups/nested%2Fteam/members/all/5')).length, 2, 'manual refresh invalidates and rechecks successful membership');
+  assert.equal(membershipRequests().filter(request => request.path.endsWith('/groups/missing-group/members/all/5')).length, 3, 'manual refresh retries unresolved membership');
   const refreshed = await call('refresh');
   assert.deepEqual(refreshed.draftNotes.map(item => item.id), [31]);
   assert.equal(cliLogs, '', 'initial load and unchanged refresh do not announce existing activity');
@@ -180,4 +194,123 @@ test('section default owners apply only to paths listed in that CODEOWNERS secti
   assert.equal(ownerStatus.codeowners.length, 2);
   assert.equal(requests.filter(request => request.path.includes('/groups/') && request.path.includes('/members/all/')).length, 2);
   assert.ok(!requests.some(request => request.path.endsWith('/groups/src%2Funowned/members/all/5')));
+});
+
+test('41 group memberships persist across merge requests and a new CLI process; only new groups require a request', { timeout: 30_000 }, async t => {
+  const originalFetch = globalThis.fetch;
+  const originalConfig = process.env.REVIEW_MASTER_CONFIG;
+  const directory = await mkdtemp(join(tmpdir(), 'review-master-41-groups-'));
+  const config = join(directory, 'accounts.json');
+  await writeFile(config, JSON.stringify([{ host: 'https://gitlab.example', token: 'persistent-test-token', username: 'reviewer' }]), { mode: 0o600 });
+  process.env.REVIEW_MASTER_CONFIG = config;
+  const groups = Array.from({ length: 41 }, (_, index) => `owners/team-${index}`);
+  const paths = groups.map((_, index) => `src/file-${index}.ts`);
+  let codeowners = groups.map((group, index) => `${paths[index]} @${group}`).join('\n');
+  const membershipCalls = [];
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 507, username: 'reviewer' }), { status: 200 });
+    if (url.pathname.endsWith('/api/v4/projects/group%2Fapp') || url.pathname.endsWith('/api/v4/projects/other%2Fapp')) return new Response(JSON.stringify({ id: 2, permissions: { project_access: { access_level: 30 } } }), { status: 200 });
+    if (url.pathname.endsWith('/CODEOWNERS/raw')) return new Response(codeowners, { status: 200 });
+    if (url.pathname.includes('/groups/') && url.pathname.includes('/members/all/')) {
+      membershipCalls.push(url.pathname);
+      return new Response(JSON.stringify({ id: 507, access_level: 30 }), { status: 200 });
+    }
+    return new Response('{}', { status: 404 });
+  };
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    originalConfig === undefined ? delete process.env.REVIEW_MASTER_CONFIG : process.env.REVIEW_MASTER_CONFIG = originalConfig;
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const call = (route, projectPath, ownerPaths) => route({
+    headers: { host: '127.0.0.1:4173' },
+    body: { mrUrl: `https://gitlab.example/${projectPath}/-/merge_requests/8`, action: 'verify-owners', payload: { paths: ownerPaths, targetBranch: 'main' } },
+  });
+  const coldStarted = Date.now();
+  const cold = await call(handler, 'group/app', paths);
+  const coldElapsed = Date.now() - coldStarted;
+  assert.equal(Object.values(cold.ownerStatus).filter(Boolean).length, 41);
+  assert.equal(membershipCalls.length, 41, 'first run verifies each distinct owner group once');
+
+  const warmStarted = Date.now();
+  const warm = await call(handler, 'other/app', paths);
+  const warmElapsed = Date.now() - warmStarted;
+  assert.equal(Object.values(warm.ownerStatus).filter(Boolean).length, 41);
+  assert.equal(membershipCalls.length, 41, 'another MR/project reuses all known effective access levels');
+
+  const childRoute = `
+    globalThis.createError = options => Object.assign(new Error(options.statusMessage), options);
+    globalThis.defineEventHandler = handler => handler;
+    globalThis.readBody = event => event.body;
+    globalThis.getRequestHeader = (event, name) => event.headers?.[name];
+    let membershipRequests = 0;
+    globalThis.fetch = async input => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 507, username: 'reviewer' }), { status: 200 });
+      if (url.pathname.endsWith('/api/v4/projects/group%2Fapp')) return new Response(JSON.stringify({ id: 2, permissions: { project_access: { access_level: 30 } } }), { status: 200 });
+      if (url.pathname.endsWith('/CODEOWNERS/raw')) return new Response(${JSON.stringify(codeowners)}, { status: 200 });
+      if (url.pathname.includes('/groups/') && url.pathname.includes('/members/all/')) membershipRequests++;
+      return new Response('{}', { status: 404 });
+    };
+    const { default: route } = await import(${JSON.stringify(new URL('../server/api/gitlab.post.ts', import.meta.url).href)});
+    const result = await route({ headers: { host: '127.0.0.1:4173' }, body: { mrUrl: 'https://gitlab.example/group/app/-/merge_requests/9', action: 'verify-owners', payload: { paths: ${JSON.stringify(paths)}, targetBranch: 'main' } } });
+    console.log(JSON.stringify({ ownerStatus: result.ownerStatus, membershipRequests }));
+  `;
+  const restarted = spawnSync(process.execPath, ['--input-type=module', '--eval', childRoute], {
+    encoding: 'utf8',
+    env: { ...process.env, REVIEW_MASTER_CONFIG: config, PATH: '' },
+  });
+  assert.equal(restarted.status, 0, restarted.stderr);
+  assert.ok(restarted.stdout.trim(), JSON.stringify({ status: restarted.status, error: restarted.error?.message, signal: restarted.signal, stderr: restarted.stderr }));
+  const restartedResult = JSON.parse(restarted.stdout.trim());
+  assert.equal(Object.values(restartedResult.ownerStatus).filter(Boolean).length, 41);
+  assert.equal(restartedResult.membershipRequests, 0, 'a fresh Node process reuses the durable snapshot without membership API calls');
+
+  codeowners += '\nsrc/new.ts @owners/new-team';
+  const updated = await call(handler, 'group/app', ['src/new.ts']);
+  assert.deepEqual(updated.ownerStatus, { '@owners/new-team': true });
+  assert.equal(membershipCalls.length, 42, 'a new owner path causes only its new membership lookup');
+  assert.ok(Number.isFinite(coldElapsed) && Number.isFinite(warmElapsed), 'cold and warm route durations are measured');
+  console.log(`RMR-7 41-owner route timings: cold ${coldElapsed}ms; warm ${warmElapsed}ms; membership requests ${41} then ${0}`);
+});
+
+test('forbidden, rate-limited and server-error memberships stay unknown and are retried', async t => {
+  const originalFetch = globalThis.fetch;
+  const originalConfig = process.env.REVIEW_MASTER_CONFIG;
+  const directory = await mkdtemp(join(tmpdir(), 'review-master-owner-errors-'));
+  const config = join(directory, 'accounts.json');
+  await writeFile(config, JSON.stringify([{ host: 'https://gitlab.example', token: 'error-test-token', username: 'reviewer' }]), { mode: 0o600 });
+  process.env.REVIEW_MASTER_CONFIG = config;
+  const codeowners = 'src/a.ts @groups/forbidden\nsrc/b.ts @groups/rate\nsrc/c.ts @groups/server';
+  const requests = [];
+  globalThis.fetch = async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 75, username: 'reviewer' }), { status: 200 });
+    if (url.pathname.endsWith('/api/v4/projects/group%2Fapp')) return new Response(JSON.stringify({ id: 2 }), { status: 200 });
+    if (url.pathname.endsWith('/CODEOWNERS/raw')) return new Response(codeowners, { status: 200 });
+    if (url.pathname.includes('/groups/') && url.pathname.includes('/members/all/')) {
+      requests.push(url.pathname);
+      if (url.pathname.includes('forbidden')) return new Response('', { status: 403 });
+      if (url.pathname.includes('rate')) return new Response('', { status: 429 });
+      return new Response('', { status: 503 });
+    }
+    return new Response('{}', { status: 404 });
+  };
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    originalConfig === undefined ? delete process.env.REVIEW_MASTER_CONFIG : process.env.REVIEW_MASTER_CONFIG = originalConfig;
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const call = () => handler({
+    headers: { host: '127.0.0.1:4173' },
+    body: { mrUrl: 'https://gitlab.example/group/app/-/merge_requests/10', action: 'verify-owners', payload: { paths: ['src/a.ts', 'src/b.ts', 'src/c.ts'], targetBranch: 'main' } },
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await call();
+    assert.deepEqual(result.ownerStatus, { '@groups/forbidden': null, '@groups/rate': null, '@groups/server': null });
+  }
+  assert.equal(requests.length, 6, 'failed membership requests are not persisted as negative results');
 });
