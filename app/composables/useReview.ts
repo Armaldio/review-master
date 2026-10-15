@@ -10,6 +10,7 @@ export function useReview() {
   const error = ref('');
   const busy = ref(false);
   const ownershipPending = ref(false);
+  const membershipCheckedAt = ref<string | null>(null);
   const refreshedAt = ref(0);
   const retryAt = ref(0);
   const backoffMs = ref(90_000);
@@ -70,6 +71,7 @@ export function useReview() {
   async function bootstrap(url: string) {
     const generation = ++bootstrapGeneration;
     ownershipPending.value = true;
+    membershipCheckedAt.value = null;
     mrUrl.value = url;
     busy.value = true;
     try {
@@ -83,22 +85,34 @@ export function useReview() {
       if (generation === bootstrapGeneration && !review.value) ownershipPending.value = false;
     }
   }
-  async function verifyOwnership() {
+  async function verifyOwnership(refreshMemberships = false) {
     const generation = bootstrapGeneration;
     if (!review.value) return;
     const item = review.value;
     ownershipPending.value = true;
     try {
-      const ownership = await call<{ codeowners: ReviewData['codeowners']; ownerStatus: Record<string, boolean | null>; ownerWarning?: string }>('verify-owners', {
+      const ownership = await call<{ codeowners: ReviewData['codeowners']; ownerStatus: Record<string, boolean | null>; ownerWarning?: string; membershipCheckedAt?: string | null }>('verify-owners', {
         paths: item.diffs.map(file => file.deleted_file ? file.old_path : file.new_path),
         targetBranch: item.mr.target_branch,
+        refreshMemberships,
       });
-      if (generation === bootstrapGeneration && review.value) review.value = { ...review.value, ...ownership };
+      if (generation === bootstrapGeneration && review.value) {
+        const { membershipCheckedAt: checkedAt, ...reviewOwnership } = ownership;
+        review.value = { ...review.value, ...reviewOwnership };
+        membershipCheckedAt.value = checkedAt || null;
+      }
     } catch {
-      if (generation === bootstrapGeneration && review.value) review.value = { ...review.value, ownerWarning: 'CODEOWNERS owners could not be verified; showing all files.' };
+      if (generation === bootstrapGeneration && review.value) {
+        review.value = { ...review.value, ownerStatus: {}, ownerWarning: 'CODEOWNERS owners could not be verified; Only my files may be incomplete.' };
+        if (refreshMemberships) membershipCheckedAt.value = null;
+      }
     } finally {
       if (generation === bootstrapGeneration) ownershipPending.value = false;
     }
+  }
+  async function refreshMemberships() {
+    if (ownershipPending.value) return;
+    await verifyOwnership(true);
   }
   async function hydrateIdentities() {
     const generation = bootstrapGeneration;
@@ -158,5 +172,5 @@ export function useReview() {
     persist();
   }
   function setAutoAdvance(value: boolean) { autoAdvance.value = value; persist(); }
-  return { mrUrl, review, files, selectedPath, selected, error, busy, ownershipPending, refreshedAt, retryAt, drafts, reviewed, autoAdvance, call, bootstrap, verifyOwnership, hydrateIdentities, refresh, setDraft, setReviewed, setAutoAdvance };
+  return { mrUrl, review, files, selectedPath, selected, error, busy, ownershipPending, membershipCheckedAt, refreshedAt, retryAt, drafts, reviewed, autoAdvance, call, bootstrap, verifyOwnership, refreshMemberships, hydrateIdentities, refresh, setDraft, setReviewed, setAutoAdvance };
 }
