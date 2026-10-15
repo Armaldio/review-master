@@ -1,5 +1,12 @@
 # @armaldio/mergepeek
 
+## 3.0.5
+
+### Patch Changes
+
+- 2b4bd73: Fix stale diff comments and render expanded large files
+- 03014ce: Filter files by confirmed CODEOWNERS ownership and reuse verified group memberships across CLI restarts.
+
 ## 3.0.4
 
 ### Patch Changes
