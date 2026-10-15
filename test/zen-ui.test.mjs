@@ -70,6 +70,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, hasTouch: true });
   const page = await context.newPage();
   const errors = [];
+  let emptyReview = false;
   page.on('pageerror', error => errors.push(error.message));
   await context.route('**/api/gitlab', async route => {
     const request = route.request().postDataJSON();
@@ -82,7 +83,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
       return {
         mr: { ...mr, sha: version.head_commit_sha, diff_refs: { base_sha: previous?.head_commit_sha || version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: previous?.head_commit_sha || version.start_commit_sha } },
         user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2 },
-        diffs: reviewFiles.map(file => ({ ...file })), versions,
+        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file })), versions,
         selectedVersionId: version.id, versionIsInitial: !previous, versionIsLatest: index === 0,
         commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
         commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1] }],
@@ -290,4 +291,12 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   const reducedTransition = await page.locator('.comment-panel').evaluate(element => getComputedStyle(element).transitionDuration.split(',').map(value => value.trim()));
   assert.ok(reducedTransition.every(value => value === '0s' || value === '0ms'), 'reduced motion removes the panel transition');
   assert.equal(await page.getByLabel('Add an MR-level comment').isVisible(), true, 'touch can open the real activity composer without hover');
+
+  emptyReview = true;
+  await page.goto(`${baseUrl}/?mr=${encodeURIComponent(mrUrl)}`);
+  const zenButton = page.getByRole('button', { name: 'Enter Zen Mode' });
+  await zenButton.waitFor();
+  await zenButton.click();
+  await page.locator('.review-layout.zen-mode').waitFor();
+  assert.deepEqual(errors, [], 'Zen controls render safely when the MR has no changed files');
 });

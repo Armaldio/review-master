@@ -179,7 +179,7 @@ function openProgressSegment(file: any) {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
   setFile(file);
 }
-function isReviewed(file: any) { return !commitInspection.value && Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
+function isReviewed(file: any) { return Boolean(!commitInspection.value && file?.identity && app.reviewed.value[fileName(file)] === file.identity); }
 function isUnreadVersion(version: { id: number }) { return app.unreadVersions.value.some(item => item.id === version.id); }
 function shortSha(version: { head_commit_sha: string }) { return version.head_commit_sha?.slice(0, 8) || 'SHA unavailable'; }
 function pushTime(version: { created_at: string }) {
