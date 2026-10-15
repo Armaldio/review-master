@@ -2,11 +2,80 @@ import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '
 import { logReviewActivity } from '../utils/review-activity.ts';
 import { readMembership, writeMembership, deleteMembership } from '../utils/membership-cache.ts';
 import { codeownersForPath, parseCodeowners } from '../../shared/codeowners.ts';
+import { commentableLinesForDelta } from '../utils/diff-comment-positions.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
+type DiffVersion = { id: number; created_at: string; head_commit_sha: string; base_commit_sha: string; start_commit_sha: string; state?: string; real_size?: string };
+type VersionDiff = DiffVersion & { diffs?: Diff[] };
+type CompareResult = { diffs?: Diff[]; compare_timeout?: boolean; compare_same_ref?: boolean };
 const json = (value: unknown) => JSON.stringify(value);
 const ownerMembershipRequests = new Map<string, Promise<{ accessLevel: number; checkedAt: string } | null>>();
+
+function requireDiffVersions(versions: DiffVersion[]): DiffVersion[] {
+  if (!Array.isArray(versions) || !versions.length) {
+    throw createError({ statusCode: 502, statusMessage: 'GitLab did not return any stored merge request diff versions. Refresh the merge request and try again.' });
+  }
+  const ids = new Set<number>();
+  for (const version of versions) {
+    if (!Number.isSafeInteger(version?.id) || version.id <= 0 || ids.has(version.id)
+      || typeof version.head_commit_sha !== 'string' || !version.head_commit_sha
+      || typeof version.base_commit_sha !== 'string' || !version.base_commit_sha
+      || typeof version.start_commit_sha !== 'string' || !version.start_commit_sha) {
+      throw createError({ statusCode: 502, statusMessage: 'GitLab returned incomplete push version history. Refresh the merge request and try again.' });
+    }
+    ids.add(version.id);
+  }
+  return versions;
+}
+
+async function diffForVersion(base: string, project: string, token: string, versions: DiffVersion[], versionId: number) {
+  const index = versions.findIndex(version => version.id === versionId);
+  if (index < 0) throw createError({ statusCode: 404, statusMessage: 'This merge request push version is no longer available. Refresh history and select an available version.' });
+  const version = versions[index]!;
+  const versionUrl = `${base}/versions/${version.id}`;
+  const snapshot = await gitlab<VersionDiff>(versionUrl, token);
+  if (snapshot.id !== version.id || snapshot.head_commit_sha !== version.head_commit_sha
+    || snapshot.base_commit_sha !== version.base_commit_sha || snapshot.start_commit_sha !== version.start_commit_sha) {
+    throw createError({ statusCode: 502, statusMessage: `GitLab returned stale data for push version ${version.id}. Refresh history and try again.` });
+  }
+  if (snapshot.state && snapshot.state !== 'collected' && snapshot.state !== 'without_files') {
+    throw createError({ statusCode: 502, statusMessage: `GitLab has not collected a complete diff for push version ${version.id}.` });
+  }
+
+  const previous = versions[index + 1];
+  let diffs: Diff[];
+  let refs: { base_sha: string; head_sha: string; start_sha: string };
+  if (previous || snapshot.state === 'without_files' || !Array.isArray(snapshot.diffs)) {
+    const from = previous?.head_commit_sha || version.base_commit_sha;
+    const to = version.head_commit_sha;
+    const comparison = await gitlab<CompareResult>(`${project}/repository/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&straight=true`, token);
+    if (comparison.compare_timeout || !Array.isArray(comparison.diffs) || comparison.diffs.some(file => file.collapsed || file.too_large)) {
+      throw createError({ statusCode: 502, statusMessage: `GitLab could not return a complete version diff for push ${version.id}. Refresh history and try again.` });
+    }
+    diffs = comparison.diffs;
+    refs = previous
+      ? { base_sha: from, head_sha: to, start_sha: from }
+      : { base_sha: version.base_commit_sha, head_sha: to, start_sha: version.start_commit_sha };
+  } else {
+    diffs = snapshot.diffs;
+    refs = { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha };
+  }
+
+  return {
+    selectedVersionId: version.id,
+    versionIsInitial: !previous,
+    versionIsLatest: index === 0,
+    versions,
+    mrDiffRefs: refs,
+    commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
+    commentableLines: previous && index === 0 && snapshot.state === 'collected' && Array.isArray(snapshot.diffs)
+      ? commentableLinesForDelta(diffs, snapshot.diffs)
+      : [],
+    mrSha: version.head_commit_sha,
+    diffs: diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })),
+  };
+}
 
 export default defineEventHandler(async event => {
   const body = await readBody<{ mrUrl?: string; action?: string; payload?: Record<string, any> }>(event);
@@ -18,18 +87,42 @@ export default defineEventHandler(async event => {
 
   switch (body.action) {
     case 'bootstrap': {
-      const [info, diffs] = await Promise.all([
+      const [info, listedVersions] = await Promise.all([
         detail(),
-        gitlabPages<Diff>(`${base}/diffs`, token),
+        gitlabPages<DiffVersion>(`${base}/versions`, token),
       ]);
+      const versions = requireDiffVersions(listedVersions);
+      const selected = await diffForVersion(base, project, token, versions, versions[0]!.id);
       return {
-        mr: { ...info, diff_refs: info.diff_refs || {} }, user: { id: user.id, username: user.username, name: user.name },
+        mr: { ...info, sha: selected.mrSha, diff_refs: selected.mrDiffRefs }, user: { id: user.id, username: user.username, name: user.name },
         project: { id: info.project_id },
-        diffs: diffs.map(file => ({
-          ...file,
-          identity: file.deleted_file ? 'deleted' : null,
-        })),
+        diffs: selected.diffs,
+        versions: selected.versions,
+        selectedVersionId: selected.selectedVersionId,
+        versionIsInitial: selected.versionIsInitial,
+        versionIsLatest: selected.versionIsLatest,
+        commentRefs: selected.commentRefs,
+        commentableLines: selected.commentableLines,
         discussions: [], draftNotes: [], codeowners: [], ownerStatus: {},
+      };
+    }
+    case 'version-diff': {
+      const requested = body.payload?.versionId;
+      const validInput = typeof requested === 'number' || typeof requested === 'string' && /^\d+$/.test(requested);
+      const versionId = typeof requested === 'number' ? requested : validInput ? Number(requested) : NaN;
+      if (!validInput || !Number.isSafeInteger(versionId) || versionId <= 0) throw createError({ statusCode: 400, statusMessage: 'A valid GitLab push version is required.' });
+      const [info, listedVersions] = await Promise.all([detail(), gitlabPages<DiffVersion>(`${base}/versions`, token)]);
+      const versions = requireDiffVersions(listedVersions);
+      const selected = await diffForVersion(base, project, token, versions, versionId);
+      return {
+        mr: { ...info, sha: selected.mrSha, diff_refs: selected.mrDiffRefs },
+        diffs: selected.diffs,
+        versions: selected.versions,
+        selectedVersionId: selected.selectedVersionId,
+        versionIsInitial: selected.versionIsInitial,
+        versionIsLatest: selected.versionIsLatest,
+        commentRefs: selected.commentRefs,
+        commentableLines: selected.commentableLines,
       };
     }
     case 'file-identities': {
@@ -57,9 +150,10 @@ export default defineEventHandler(async event => {
       return { codeowners: owners.rules, ownerStatus: ownership.status, ownerWarning: owners.warning, membershipCheckedAt: ownership.membershipCheckedAt };
     }
     case 'refresh': {
-      const [info, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
+      const [info, listedVersions, discussions, draftNotes] = await Promise.all([detail(), gitlabPages<DiffVersion>(`${base}/versions`, token), gitlabPages<any>(`${base}/discussions`, token), gitlabPages<any>(`${base}/draft_notes`, token)]);
+      const versions = requireDiffVersions(listedVersions);
       if (process.env.REVIEW_MASTER_CLI === '1') logReviewActivity(`${mr.host}/${mr.projectPath}/${mr.iid}`, info, discussions);
-      return { mr: info, discussions, draftNotes };
+      return { mr: info, versions, discussions, draftNotes };
     }
     case 'preview': {
       const info = await detail();
@@ -144,6 +238,7 @@ async function gitlabPages<T>(url: string, token: string, maxPages = 10): Promis
   const result: T[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const rows = await gitlab<T[]>(`${url}?per_page=100&page=${page}`, token);
+    if (!Array.isArray(rows)) throw createError({ statusCode: 502, statusMessage: 'GitLab returned an invalid paginated response. Refresh and try again.' });
     result.push(...rows);
     if (rows.length < 100) break;
   }

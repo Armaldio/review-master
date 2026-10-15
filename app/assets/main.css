@@ -36,3 +36,26 @@
 @media(max-width:1000px){.top-actions{gap:3px}.progress-label{display:inline-flex}}
 @media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-heading .review-toggle{flex:none;min-width:0}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
 @media(prefers-color-scheme:dark){:root{--review-action-ink:#102d27}}
+
+/* Keep the file controls beside the path so they leave more room for the diff. */
+.file-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:6px 12px}
+.file-heading{flex:1 1 260px}
+.file-heading .path-label{min-width:0}
+.file-actions{flex:0 1 auto;flex-direction:row;align-items:center;gap:8px;width:auto}
+.review-actions{flex-wrap:nowrap;gap:4px}
+.view-actions{flex:none;padding:0 0 0 8px;border-top:0;border-left:1px solid var(--line)}
+@media(max-width:1000px){.file-heading{flex-basis:100%}.file-actions{flex:1 1 100%;justify-content:space-between;width:100%}.review-actions{flex-wrap:wrap}.view-actions{padding:4px 0 0;border-left:0;border-top:1px solid var(--line)}}
+@media(max-width:680px){.file-heading{width:100%}.file-actions{flex-direction:column;align-items:stretch;width:100%;gap:4px}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}}
+
+/* Keep background discussion traffic compact while leaving the composer available. */
+.comment-panel{max-height:30vh;padding-bottom:8px}
+.draft-notes{display:flex;align-items:center;gap:8px;min-height:28px;padding:4px 0 6px}
+.draft-notes h3{flex:none;margin:0;white-space:nowrap}
+.draft-notes>p{margin:0;font-size:11px}
+.draft-notes.has-draft-notes{display:block;padding:0 0 8px}
+.draft-notes.has-draft-notes h3{display:flex;margin:8px 0}
+.discussion-group{border-top:1px solid var(--line);padding:4px 0;font-size:12px}
+.discussion-group>summary{cursor:pointer;color:#536072}
+.discussion-group>summary span{color:var(--muted);margin-left:7px}
+.discussion-group .discussion:first-of-type{border-top:0}
+@media(max-width:680px){.draft-notes{align-items:flex-start;flex-wrap:wrap}.comment-panel{max-height:34vh;padding-bottom:8px}}

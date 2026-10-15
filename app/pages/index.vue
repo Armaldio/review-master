@@ -17,6 +17,7 @@ let continuousObserver: IntersectionObserver | undefined;
 const tree = ref(false);
 const showAll = ref(false);
 const query = ref('');
+const sidebarTab = ref<'files' | 'history'>('files');
 const descriptionOpen = ref(false);
 const previewOpen = ref(false);
 const previewBusy = ref(false);
@@ -29,6 +30,7 @@ const expandedFiles = ref<Record<string, { oldContent: string | null; newContent
 const expandingPath = ref('');
 const comment = ref('');
 const inlinePosition = ref<Record<string, any> | null>(null);
+const lineCommentFeedback = ref('');
 const commentDraft = ref(true);
 const commentBusy = ref(false);
 const draftNotesBusy = ref(false);
@@ -99,11 +101,19 @@ const totalChangedLines = computed(() => progressSegments.value.reduce((total, s
 const reviewedChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.changedLines : 0), 0));
 const progress = computed(() => totalProgressWeight.value ? Math.round(reviewedProgressWeight.value * 100 / totalProgressWeight.value) : 0);
 const discussionList = computed(() => app.review.value?.discussions || []);
+const hasActiveFileDiscussion = computed(() => discussionList.value.some(thread => thread.notes?.some((note: any) => note.position?.new_path === activeFile.value?.new_path || note.position?.old_path === activeFile.value?.old_path)));
 const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
 const hasUnknownOwner = computed(() => !app.ownershipPending.value && app.files.value.some(file => matchOwner(fileName(file)) === null));
+const currentIncrementalVersion = computed(() => app.selectedVersionId.value === app.latestVersionId.value && !app.review.value?.versionIsInitial);
+const lineCommentStatus = computed(() => {
+  if (lineCommentFeedback.value) return lineCommentFeedback.value;
+  if (app.review.value?.versionIsInitial) return '';
+  if (currentIncrementalVersion.value) return "Inline comments are available only on changed lines that GitLab also exposes in the current MR diff. Other comments are posted at MR level.";
+  return 'Inline comments are unavailable on this historical push. Comments below are posted at MR level.';
+});
 const membershipCheckedLabel = computed(() => {
   const value = app.membershipCheckedAt.value;
   if (!value || !Number.isFinite(Date.parse(value))) return '';
@@ -149,6 +159,32 @@ function openProgressSegment(file: any) {
   setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
+function isUnreadVersion(version: { id: number }) { return app.unreadVersions.value.some(item => item.id === version.id); }
+function shortSha(version: { head_commit_sha: string }) { return version.head_commit_sha?.slice(0, 8) || 'SHA unavailable'; }
+function pushTime(version: { created_at: string }) {
+  const timestamp = Date.parse(version.created_at || '');
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
+    : 'Push time unavailable';
+}
+function versionStatus(version: { id: number }) {
+  const status = app.versionReviewStatus(version.id);
+  return status === 'reviewed' ? 'Reviewed' : status === 'in-progress' ? 'In progress' : status === 'no-changes' ? 'No changes' : 'Not reviewed';
+}
+async function selectHistoryVersion(versionId: number) {
+  if (!await app.selectVersion(versionId)) return;
+  sidebarTab.value = 'files';
+  expandedFiles.value = {};
+  inlinePosition.value = null;
+  lineCommentFeedback.value = '';
+  const selectedFile = app.files.value.find(file => fileName(file) === app.selectedPath.value);
+  if (selectedFile && query.value && !fileName(selectedFile).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
+  await nextTick();
+  scheduleReviewSupplementals(false);
+}
+async function showLatestVersion() {
+  if (app.latestVersionId.value != null) await selectHistoryVersion(app.latestVersionId.value);
+}
 function toggleReviewed() {
   if (!activeFile.value?.identity) return;
   const mark = !isReviewed(activeFile.value);
@@ -183,17 +219,45 @@ async function sendComment() {
   } catch { /* error is shown in the header */ }
   finally { commentBusy.value = false; }
 }
-function positionBase() {
-  const refs = app.review.value?.mr.diff_refs;
+function positionBase(useOfficialVersionRefs = false) {
+  const refs = useOfficialVersionRefs ? app.review.value?.commentRefs : app.review.value?.mr.diff_refs;
   if (!refs?.base_sha || !refs?.head_sha || !refs?.start_sha || !activeFile.value) return null;
   return { base_sha: refs.base_sha, head_sha: refs.head_sha, start_sha: refs.start_sha, old_path: activeFile.value.old_path, new_path: activeFile.value.new_path, position_type: 'text' };
 }
 function selectDiffLine(line: { lineNumber: number; side: 'new' | 'old' }) {
-  const base = positionBase();
+  const review = app.review.value;
+  const incrementalLatest = currentIncrementalVersion.value;
+  if (!review?.versionIsInitial && !incrementalLatest) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'This historical line has no verified position in GitLab’s current MR diff. The comment will be posted at MR level.';
+    return;
+  }
+  if (incrementalLatest) {
+    const match = review?.commentableLines?.find(item => item.old_path === activeFile.value?.old_path && item.new_path === activeFile.value?.new_path);
+    const coordinates = line.side === 'new' ? match?.new_lines : match?.old_lines;
+    if (!coordinates?.includes(line.lineNumber)) {
+      inlinePosition.value = null;
+      lineCommentFeedback.value = 'GitLab’s current MR diff does not contain this changed line, so it cannot be safely anchored. The comment will be posted at MR level.';
+      return;
+    }
+  }
+  const base = positionBase(Boolean(incrementalLatest));
   if (!base) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
+  lineCommentFeedback.value = '';
   inlinePosition.value = { ...base, [line.side === 'new' ? 'new_line' : 'old_line']: line.lineNumber };
 }
 function selectDiffRange(range: { start: number; end: number; side?: string; endSide?: string }) {
+  const review = app.review.value;
+  if (currentIncrementalVersion.value) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'Multiline comments are not enabled for incremental pushes because GitLab line codes cannot be matched safely. The comment will be posted at MR level.';
+    return;
+  }
+  if (!review?.versionIsInitial) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'Multiline comments are unavailable on this historical push. The comment will be posted at MR level.';
+    return;
+  }
   const base = positionBase();
   if (!base || !activeFile.value) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
   const point = (line: number, side?: string) => {
@@ -203,6 +267,7 @@ function selectDiffRange(range: { start: number; end: number; side?: string; end
     const blob = isNew ? activeFile.value!.new_id : activeFile.value!.old_id;
     return { line_code: `${blob || app.review.value!.mr.sha}_${oldLine ?? 0}_${newLine ?? 0}`, type: isNew ? 'new' : 'old', old_line: oldLine, new_line: newLine };
   };
+  lineCommentFeedback.value = '';
   inlinePosition.value = { ...base, line_range: { start: point(range.start, range.side), end: point(range.end, range.endSide) } };
 }
 async function expandFile(file: any) {
@@ -406,15 +471,27 @@ watch(() => app.selectedPath.value, path => {
   if (!file) return;
   comment.value = app.drafts.value[`comment:${fileName(file)}`] || '';
   inlinePosition.value = null;
+  lineCommentFeedback.value = '';
 });
 watch(() => {
   const mr = app.review.value?.mr;
   return mr ? `${mr.sha}:${mr.diff_refs?.base_sha || ''}:${mr.diff_refs?.head_sha || ''}:${mr.diff_refs?.start_sha || ''}` : '';
 }, (identity, previous) => {
-  if (previous && identity !== previous) inlinePosition.value = null;
+  if (previous && identity !== previous) { inlinePosition.value = null; lineCommentFeedback.value = ''; }
 }, { flush: 'post' });
+watch(() => app.latestVersionId.value, (versionId, previous) => {
+  if (previous && versionId !== previous && !app.review.value?.versionIsInitial && app.selectedVersionId.value !== versionId) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = '';
+  }
+});
 watch(previewOpen, open => { if (open && !previewCandidates.value.length) void discoverPreview(); });
 watch(comment, saveDraft);
+watch(() => app.addedVersionIds.value.join(','), ids => {
+  if (!ids) return;
+  const count = ids.split(',').length;
+  notice.value = `${count === 1 ? 'A new push is' : `${count} new pushes are`} available in History. Your selected push and review progress stayed in place.`;
+});
 watch(summary, value => { if (summaryOpen.value) app.setDraft('mr:summary', value); });
 watch(replyText, value => { if (replyTo.value) app.setDraft(`reply:${replyTo.value}`, value); });
 watch(editText, value => { if (editingNote.value) app.setDraft(`edit:${editingNote.value}`, value); });
@@ -466,19 +543,35 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
     <div v-if="notice" class="notice" role="status" @click="notice = ''">{{ notice }} <button aria-label="Dismiss" @click.stop="notice = ''">×</button></div>
     <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen }" :style="{ '--preview-width': `${previewWidth}px` }">
       <aside class="file-sidebar">
-        <div class="sidebar-title"><span>CHANGES</span><span>{{ app.files.value.length }}</span></div>
-        <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
-        <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
-        <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
-        <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
-        <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
-        <nav class="file-list" aria-label="Changed files">
-          <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
-            <span class="file-state" :class="file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : ''">{{ file.new_file ? 'A' : file.deleted_file ? 'D' : file.renamed_file ? 'R' : 'M' }}</span>
-            <span class="file-path" :title="fileName(file)">{{ tree ? fileName(file).replaceAll('/', ' / ') : fileName(file) }}</span>
-            <span v-if="app.reviewed.value[fileName(file)] === file.identity && file.identity" class="reviewed-mark" aria-label="Reviewed">✓</span>
-          </button>
-        </nav>
+        <div class="sidebar-tabs" role="tablist" aria-label="Merge request sidebar">
+          <button id="files-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'files'" aria-controls="files-panel" @click="sidebarTab = 'files'">Files <span class="tab-count">{{ app.files.value.length }}</span></button>
+          <button id="history-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'history'" aria-controls="history-panel" :aria-label="`History${app.unreadVersions.value.length ? `, ${app.unreadVersions.value.length} new pushes` : ''}`" @click="sidebarTab = 'history'"><span>History</span><span v-if="app.unreadVersions.value.length" class="history-count">{{ app.unreadVersions.value.length }}</span></button>
+        </div>
+        <div v-if="sidebarTab === 'files'" id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
+          <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
+          <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
+          <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
+          <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
+          <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
+          <nav class="file-list" aria-label="Changed files">
+            <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
+              <span class="file-state" :class="file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : ''">{{ file.new_file ? 'A' : file.deleted_file ? 'D' : file.renamed_file ? 'R' : 'M' }}</span>
+              <span class="file-path" :title="fileName(file)">{{ tree ? fileName(file).replaceAll('/', ' / ') : fileName(file) }}</span>
+              <span v-if="isReviewed(file)" class="reviewed-mark" aria-label="Reviewed">✓</span>
+            </button>
+          </nav>
+        </div>
+        <div v-else id="history-panel" class="history-panel" role="tabpanel" aria-labelledby="history-tab">
+          <div class="history-heading"><div><strong>Push history</strong><span>Newest first</span></div><button v-if="app.selectedVersionId.value !== app.latestVersionId.value && app.latestVersionId.value != null" class="quiet" :disabled="app.busy.value" @click="showLatestVersion">Latest push →</button></div>
+          <div v-if="!app.versions.value.length" class="history-empty" role="status">GitLab has not returned any push versions.</div>
+          <nav v-else class="history-list" aria-label="Push history">
+            <button v-for="version in app.versions.value" :key="version.id" class="history-row" :class="{ selected: version.id === app.selectedVersionId.value }" :aria-current="version.id === app.selectedVersionId.value ? 'page' : undefined" :disabled="app.busy.value" @click="selectHistoryVersion(version.id)">
+              <span class="history-row-main"><strong class="history-sha">{{ shortSha(version) }}</strong><time :datetime="version.created_at">{{ pushTime(version) }}</time></span>
+              <span class="history-row-state"><span v-if="isUnreadVersion(version)" class="history-new">New</span><span class="history-review" :class="`state-${app.versionReviewStatus(version.id)}`">{{ versionStatus(version) }}</span></span>
+              <span v-if="version.id === app.selectedVersionId.value" class="history-selected">Selected</span>
+            </button>
+          </nav>
+        </div>
       </aside>
       <section class="review-main">
         <div v-if="app.busy.value && !activeFile" class="empty-state">Loading merge request…</div>
@@ -524,7 +617,8 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             </template>
           </div>
           <div class="comment-panel">
-            <section class="draft-notes" aria-label="GitLab draft notes">
+            <p v-if="lineCommentStatus" class="history-comment-warning" role="status">{{ lineCommentStatus }}</p>
+            <section class="draft-notes" :class="{ 'has-draft-notes': draftNoteList.length > 0 }" aria-label="GitLab draft notes">
               <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
               <p v-if="!draftNoteList.length">No GitLab draft notes.</p>
               <article v-for="note in draftNoteList" :key="note.id" class="note draft-note">
@@ -542,20 +636,24 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
                 </template>
               </article>
             </section>
-            <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
-              <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
-              <!-- eslint-disable-next-line vue/no-v-html -->
-              <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="reaction in reactions" :key="reaction.name" class="reaction" :aria-label="`React with ${reaction.label}`" @click="toggleReaction(note, reaction.name)">{{ (note.award_emoji || []).filter((award: any) => award.name === reaction.name).length ? `${reaction.emoji} ${(note.award_emoji || []).filter((award: any) => award.name === reaction.name).length}` : reaction.emoji }}</button></div></article>
-              <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
-              <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
+            <details v-if="discussionList.length" class="discussion-group" :open="hasActiveFileDiscussion">
+              <summary>Discussions <span>{{ discussionList.length }}</span></summary>
+              <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
+                <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
+                <!-- eslint-disable-next-line vue/no-v-html -->
+                <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="reaction in reactions" :key="reaction.name" class="reaction" :aria-label="`React with ${reaction.label}`" @click="toggleReaction(note, reaction.name)">{{ (note.award_emoji || []).filter((award: any) => award.name === reaction.name).length ? `${reaction.emoji} ${(note.award_emoji || []).filter((award: any) => award.name === reaction.name).length}` : reaction.emoji }}</button></div></article>
+                <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
+                <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
+              </details>
             </details>
-            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add a file comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
+            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add an MR-level comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
           </div>
         </template>
         <div v-else class="empty-state">
           <template v-if="app.files.value.length && !showAll">No files are visible in this owner scope. Use Show all files to review every changed file.</template>
           <template v-else-if="app.files.value.length">No files match the current search.</template>
-          <template v-else>No changed files were returned by GitLab.</template>
+          <template v-else-if="app.review.value.versionIsInitial">No changed files were returned by GitLab.</template>
+          <template v-else>No file changes in this push version.</template>
         </div>
       </section>
       <aside v-if="previewOpen" class="preview-pane">
