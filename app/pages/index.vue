@@ -17,6 +17,7 @@ let continuousObserver: IntersectionObserver | undefined;
 const tree = ref(false);
 const showAll = ref(false);
 const query = ref('');
+const sidebarTab = ref<'files' | 'history'>('files');
 const descriptionOpen = ref(false);
 const previewOpen = ref(false);
 const previewBusy = ref(false);
@@ -104,6 +105,7 @@ const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((revie
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
 const hasUnknownOwner = computed(() => !app.ownershipPending.value && app.files.value.some(file => matchOwner(fileName(file)) === null));
+const lineCommentsAvailable = computed(() => app.review.value?.versionIsInitial === true);
 const membershipCheckedLabel = computed(() => {
   const value = app.membershipCheckedAt.value;
   if (!value || !Number.isFinite(Date.parse(value))) return '';
@@ -149,6 +151,31 @@ function openProgressSegment(file: any) {
   setFile(file);
 }
 function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
+function isUnreadVersion(version: { id: number }) { return app.unreadVersions.value.some(item => item.id === version.id); }
+function shortSha(version: { head_commit_sha: string }) { return version.head_commit_sha?.slice(0, 8) || 'SHA unavailable'; }
+function pushTime(version: { created_at: string }) {
+  const timestamp = Date.parse(version.created_at || '');
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
+    : 'Push time unavailable';
+}
+function versionStatus(version: { id: number }) {
+  const status = app.versionReviewStatus(version.id);
+  return status === 'reviewed' ? 'Reviewed' : status === 'in-progress' ? 'In progress' : status === 'no-changes' ? 'No changes' : 'Not reviewed';
+}
+async function selectHistoryVersion(versionId: number) {
+  if (!await app.selectVersion(versionId)) return;
+  sidebarTab.value = 'files';
+  expandedFiles.value = {};
+  inlinePosition.value = null;
+  const selectedFile = app.files.value.find(file => fileName(file) === app.selectedPath.value);
+  if (selectedFile && query.value && !fileName(selectedFile).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
+  await nextTick();
+  scheduleReviewSupplementals(false);
+}
+async function showLatestVersion() {
+  if (app.latestVersionId.value != null) await selectHistoryVersion(app.latestVersionId.value);
+}
 function toggleReviewed() {
   if (!activeFile.value?.identity) return;
   const mark = !isReviewed(activeFile.value);
@@ -189,11 +216,13 @@ function positionBase() {
   return { base_sha: refs.base_sha, head_sha: refs.head_sha, start_sha: refs.start_sha, old_path: activeFile.value.old_path, new_path: activeFile.value.new_path, position_type: 'text' };
 }
 function selectDiffLine(line: { lineNumber: number; side: 'new' | 'old' }) {
+  if (!lineCommentsAvailable.value) { inlinePosition.value = null; return; }
   const base = positionBase();
   if (!base) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
   inlinePosition.value = { ...base, [line.side === 'new' ? 'new_line' : 'old_line']: line.lineNumber };
 }
 function selectDiffRange(range: { start: number; end: number; side?: string; endSide?: string }) {
+  if (!lineCommentsAvailable.value) { inlinePosition.value = null; return; }
   const base = positionBase();
   if (!base || !activeFile.value) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
   const point = (line: number, side?: string) => {
@@ -415,6 +444,11 @@ watch(() => {
 }, { flush: 'post' });
 watch(previewOpen, open => { if (open && !previewCandidates.value.length) void discoverPreview(); });
 watch(comment, saveDraft);
+watch(() => app.addedVersionIds.value.join(','), ids => {
+  if (!ids) return;
+  const count = ids.split(',').length;
+  notice.value = `${count === 1 ? 'A new push is' : `${count} new pushes are`} available in History. Your selected push and review progress stayed in place.`;
+});
 watch(summary, value => { if (summaryOpen.value) app.setDraft('mr:summary', value); });
 watch(replyText, value => { if (replyTo.value) app.setDraft(`reply:${replyTo.value}`, value); });
 watch(editText, value => { if (editingNote.value) app.setDraft(`edit:${editingNote.value}`, value); });
@@ -466,19 +500,35 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
     <div v-if="notice" class="notice" role="status" @click="notice = ''">{{ notice }} <button aria-label="Dismiss" @click.stop="notice = ''">×</button></div>
     <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen }" :style="{ '--preview-width': `${previewWidth}px` }">
       <aside class="file-sidebar">
-        <div class="sidebar-title"><span>CHANGES</span><span>{{ app.files.value.length }}</span></div>
-        <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
-        <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
-        <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
-        <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
-        <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
-        <nav class="file-list" aria-label="Changed files">
-          <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
-            <span class="file-state" :class="file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : ''">{{ file.new_file ? 'A' : file.deleted_file ? 'D' : file.renamed_file ? 'R' : 'M' }}</span>
-            <span class="file-path" :title="fileName(file)">{{ tree ? fileName(file).replaceAll('/', ' / ') : fileName(file) }}</span>
-            <span v-if="app.reviewed.value[fileName(file)] === file.identity && file.identity" class="reviewed-mark" aria-label="Reviewed">✓</span>
-          </button>
-        </nav>
+        <div class="sidebar-tabs" role="tablist" aria-label="Merge request sidebar">
+          <button id="files-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'files'" aria-controls="files-panel" @click="sidebarTab = 'files'">Files <span class="tab-count">{{ app.files.value.length }}</span></button>
+          <button id="history-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'history'" aria-controls="history-panel" :aria-label="`History${app.unreadVersions.value.length ? `, ${app.unreadVersions.value.length} new pushes` : ''}`" @click="sidebarTab = 'history'"><span>History</span><span v-if="app.unreadVersions.value.length" class="history-count">{{ app.unreadVersions.value.length }}</span></button>
+        </div>
+        <div v-if="sidebarTab === 'files'" id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
+          <div class="sidebar-controls"><input v-model="query" placeholder="Find a file" aria-label="Find a file"><button class="icon-button" :aria-label="tree ? 'Use flat list' : 'Use directory tree'" @click="tree = !tree">{{ tree ? '≡' : '⌘' }}</button></div>
+          <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
+          <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
+          <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
+          <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
+          <nav class="file-list" aria-label="Changed files">
+            <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
+              <span class="file-state" :class="file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : ''">{{ file.new_file ? 'A' : file.deleted_file ? 'D' : file.renamed_file ? 'R' : 'M' }}</span>
+              <span class="file-path" :title="fileName(file)">{{ tree ? fileName(file).replaceAll('/', ' / ') : fileName(file) }}</span>
+              <span v-if="isReviewed(file)" class="reviewed-mark" aria-label="Reviewed">✓</span>
+            </button>
+          </nav>
+        </div>
+        <div v-else id="history-panel" class="history-panel" role="tabpanel" aria-labelledby="history-tab">
+          <div class="history-heading"><div><strong>Push history</strong><span>Newest first</span></div><button v-if="app.selectedVersionId.value !== app.latestVersionId.value && app.latestVersionId.value != null" class="quiet" :disabled="app.busy.value" @click="showLatestVersion">Latest push →</button></div>
+          <div v-if="!app.versions.value.length" class="history-empty" role="status">GitLab has not returned any push versions.</div>
+          <nav v-else class="history-list" aria-label="Push history">
+            <button v-for="version in app.versions.value" :key="version.id" class="history-row" :class="{ selected: version.id === app.selectedVersionId.value }" :aria-current="version.id === app.selectedVersionId.value ? 'page' : undefined" :disabled="app.busy.value" @click="selectHistoryVersion(version.id)">
+              <span class="history-row-main"><strong class="history-sha">{{ shortSha(version) }}</strong><time :datetime="version.created_at">{{ pushTime(version) }}</time></span>
+              <span class="history-row-state"><span v-if="isUnreadVersion(version)" class="history-new">New</span><span class="history-review" :class="`state-${app.versionReviewStatus(version.id)}`">{{ versionStatus(version) }}</span></span>
+              <span v-if="version.id === app.selectedVersionId.value" class="history-selected">Selected</span>
+            </button>
+          </nav>
+        </div>
       </aside>
       <section class="review-main">
         <div v-if="app.busy.value && !activeFile" class="empty-state">Loading merge request…</div>
@@ -524,6 +574,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             </template>
           </div>
           <div class="comment-panel">
+            <p v-if="!lineCommentsAvailable" class="history-comment-warning" role="status">Line comments are disabled on incremental historical diffs because GitLab’s position references may not match the push delta. File comments and draft notes remain available.</p>
             <section class="draft-notes" aria-label="GitLab draft notes">
               <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
               <p v-if="!draftNoteList.length">No GitLab draft notes.</p>
@@ -555,7 +606,8 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <div v-else class="empty-state">
           <template v-if="app.files.value.length && !showAll">No files are visible in this owner scope. Use Show all files to review every changed file.</template>
           <template v-else-if="app.files.value.length">No files match the current search.</template>
-          <template v-else>No changed files were returned by GitLab.</template>
+          <template v-else-if="app.review.value.versionIsInitial">No changed files were returned by GitLab.</template>
+          <template v-else>No file changes in this push version.</template>
         </div>
       </section>
       <aside v-if="previewOpen" class="preview-pane">

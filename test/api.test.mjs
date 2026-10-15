@@ -50,6 +50,7 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
   const draft = { id: 31, note: 'Remote draft', discussion_id: null, position: null };
   let codeownersFile = '[Maintainers] @reviewer another@example.com @nested/team @nested/team%developer @nested/team%maintainer @missing-group\n*\n!docs/private/**\n\n[Unrelated]\nprivate/** @unused/group\n';
   let currentSha = 'head';
+  const versions = () => [{ id: currentSha === 'head' ? 1 : 2, created_at: '2026-10-01T12:00:00Z', head_commit_sha: currentSha, base_commit_sha: `base-${currentSha}`, start_commit_sha: `base-${currentSha}`, state: 'collected' }];
   let currentDiscussions = [];
   let nestedAccessLevel = 30;
   let cliLogs = '';
@@ -68,6 +69,8 @@ test('loads and refreshes draft notes and uses GitLab-supported MR and draft-not
     const payload = url.pathname.endsWith('/merge_requests/7') ? { id: 77, iid: 7, title: 'Draft MR', draft: true, sha: currentSha, diff_refs: {} }
       : url.pathname.endsWith('/api/v4/user') ? { id: 5, username: 'reviewer', name: 'Reviewer', email: 'reviewer@example.com' }
       : url.pathname.endsWith('/api/v4/projects/group%2Fapp') ? { id: 2, path_with_namespace: 'group/app', namespace: {} }
+      : url.pathname.endsWith('/merge_requests/7/versions') ? versions()
+      : url.pathname.endsWith('/versions/1') || url.pathname.endsWith('/versions/2') ? { ...versions()[0], diffs: [{ old_path: 'a.ts', new_path: 'a.ts', diff: '', new_file: false, deleted_file: false, renamed_file: false }] }
       : url.pathname.endsWith('/diffs') ? [{ old_path: 'a.ts', new_path: 'a.ts', diff: '', new_file: false, deleted_file: false, renamed_file: false }]
       : url.pathname.endsWith('/discussions') ? currentDiscussions
       : url.pathname.includes('/draft_notes') && !url.pathname.endsWith('/bulk_publish') ? [draft]
@@ -166,6 +169,8 @@ test('section default owners apply only to paths listed in that CODEOWNERS secti
     if (url.pathname.endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 5, username: 'reviewer' }), { status: 200 });
     if (url.pathname.endsWith('/api/v4/projects/group%2Fapp/merge_requests/7')) return new Response(JSON.stringify({ id: 77, iid: 7, title: 'Section defaults', target_branch: 'main', sha: 'head', diff_refs: {} }), { status: 200 });
     if (url.pathname.endsWith('/api/v4/projects/group%2Fapp')) return new Response(JSON.stringify({ id: 2, path_with_namespace: 'group/app', namespace: {}, permissions: { project_access: { access_level: 30 } } }), { status: 200 });
+    if (url.pathname.endsWith('/merge_requests/7/versions')) return new Response(JSON.stringify([{ id: 1, created_at: '2026-10-01T12:00:00Z', head_commit_sha: 'head', base_commit_sha: 'base', start_commit_sha: 'base', state: 'collected' }]), { status: 200 });
+    if (url.pathname.endsWith('/versions/1')) return new Response(JSON.stringify({ id: 1, head_commit_sha: 'head', base_commit_sha: 'base', start_commit_sha: 'base', state: 'collected', diffs }), { status: 200 });
     if (url.pathname.endsWith('/diffs')) return new Response(JSON.stringify(diffs), { status: 200 });
     if (url.pathname.endsWith('/discussions') || url.pathname.endsWith('/draft_notes')) return new Response('[]', { status: 200 });
     if (url.pathname.endsWith('/groups/docs%2Fteam/members/all/5') || url.pathname.endsWith('/groups/infra%2Fteam/members/all/5')) return new Response(JSON.stringify({ id: 5, access_level: 30 }), { status: 200 });

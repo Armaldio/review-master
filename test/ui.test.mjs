@@ -9,11 +9,14 @@ const root = new URL('../', import.meta.url).pathname;
 const mr = { id: 77, iid: 7, title: 'Keep review state stable', description: 'A mocked review.\n\n![GitLab upload](https://gitlab.example/uploads/screenshot.png)\n\n![External image](https://attacker.invalid/track.png)', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'feature', target_branch: 'main', sha: 'head1', diff_refs: { base_sha: 'base1', head_sha: 'head1', start_sha: 'base1' }, source_project_id: 2, target_project_id: 2, author: { username: 'reviewer', name: 'Reviewer' } };
 let currentMrSha = 'head1';
 const currentMr = () => ({ ...mr, sha: currentMrSha, diff_refs: { base_sha: `base-${currentMrSha}`, head_sha: currentMrSha, start_sha: `base-${currentMrSha}` } });
+const push = (id, sha) => ({ id, created_at: `2026-10-0${id - 100}T12:00:00Z`, head_commit_sha: sha, base_commit_sha: `base-${sha}`, start_commit_sha: `base-${sha}`, state: 'collected' });
+let currentVersions = [push(101, 'head1')];
 let includeFullFile = false;
 let remoteDraftText = 'Remote GitLab draft';
 let ownerMembershipKnown = true;
 const data = () => ({
   mr: currentMr(), user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2, path: 'group/app' },
+  versions: currentVersions,
   diffs: [
     { old_path: 'doc/releases/19/release.md', new_path: 'doc/releases/19/release.md', diff: '@@ -0,0 +1 @@\n+const newA = 2;\n', new_file: true, deleted_file: false, renamed_file: false, identity: 'blob-a' },
     { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: '@@ -1 +1 @@\n-const oldB = 1;\n+const newB = 2;\n', new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
@@ -21,6 +24,20 @@ const data = () => ({
   ], discussions: [{ id: 'thread-1', resolved: false, notes: [{ id: 41, body: 'Mock discussion', author: { id: 6, name: 'Reviewer' }, award_emoji: [] }] }], draftNotes: [{ id: 31, note: remoteDraftText, position: null }, { id: 32, note: 'Delete this draft', position: null }],
   codeowners: [{ pattern: 'releases/**/*.md', owners: ['reviewer', 'other'] }, { pattern: 'src/b.ts', owners: ['other'] }], ownerStatus: { reviewer: true, other: null },
 });
+const versionData = versionId => {
+  const index = currentVersions.findIndex(version => version.id === versionId);
+  const version = currentVersions[index];
+  const previous = currentVersions[index + 1];
+  return {
+    ...data(),
+    mr: { ...currentMr(), sha: version.head_commit_sha, diff_refs: previous
+      ? { base_sha: previous.head_commit_sha, head_sha: version.head_commit_sha, start_sha: previous.head_commit_sha }
+      : { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha } },
+    diffs: data().diffs.map(file => ({ ...file, identity: null })),
+    selectedVersionId: version.id,
+    versionIsInitial: !previous,
+  };
+};
 async function availablePort() {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -119,9 +136,10 @@ const submittedComments = [];
       deletedDrafts.add(request.payload.draftNoteId);
     }
     if (request.action === 'edit-draft-note') remoteDraftText = request.payload.note;
-    const result = request.action === 'bootstrap' ? { ...data(), diffs: data().diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })), discussions: [], draftNotes: [] }
+    const result = request.action === 'bootstrap' ? { ...data(), ...versionData(currentVersions[0].id), discussions: [], draftNotes: [] }
       : request.action === 'file-identities' ? { identities: Object.fromEntries(data().diffs.filter(file => request.payload.paths.includes(file.new_path)).map(file => [file.new_path, file.identity])) }
-      : request.action === 'refresh' ? { mr: currentMr(), discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+      : request.action === 'version-diff' ? versionData(request.payload.versionId)
+      : request.action === 'refresh' ? { mr: currentMr(), versions: currentVersions, discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
       : request.action === 'verify-owners' ? { codeowners: data().codeowners, ownerStatus: ownerMembershipKnown ? { reviewer: true, other: null } : { reviewer: null, other: null } }
       : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa-feature', match: 'exact', stale: false }] }
       : request.action === 'comment' ? (submittedComments.push(request.payload), { id: 1 })
@@ -250,10 +268,26 @@ const submittedComments = [];
   await page.locator('#review-comment').fill('Comment draft survives a diff update');
   assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/);
   currentMrSha = 'head2';
+  currentVersions = [push(102, 'head2'), push(101, 'head1')];
   await page.getByRole('button', { name: '↻ Refresh' }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('.top-actions button')].some(button => button.textContent?.trim() === '↻ Refresh' && !button.disabled));
-  assert.match(await page.locator('.comment-form > label').innerText(), /Add a file comment/, `a changed diff clears the stale line selection; actions: ${apiCalls.join(',')}`);
-  assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'clearing a stale line keeps the unsent text');
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'polling keeps the open file on the selected push');
+  assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/, 'the selected historical diff retains its valid line position');
+  assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'polling keeps the unsent text');
+  await page.getByRole('tab', { name: /History/ }).click();
+  assert.equal(await page.locator('.history-row').count(), 2, 'the new push appears as a separate history entry');
+  assert.match(await page.locator('.history-row').first().innerText(), /head2[\s\S]*New/);
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'switching Files and History keeps the selected file');
+  await page.locator('.history-row').first().click();
+  await page.getByText('Line comments are disabled on incremental historical diffs', { exact: false }).waitFor();
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add a file comment/, 'incremental diff navigation clears incompatible line positions');
+  assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'version navigation keeps the pending comment draft');
+  assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).isVisible(), true, 'review state from the prior push is not inherited');
+  await page.getByRole('tab', { name: /History/ }).click();
+  const selectedHistoryRow = await page.locator('.history-row').first().innerText();
+  assert.match(selectedHistoryRow, /Not reviewed[\s\S]*Selected/);
+  assert.doesNotMatch(selectedHistoryRow, /\bNew\b/, 'opening a push clears its unread indication');
+  await page.locator('.history-row').first().click();
   await page.getByRole('checkbox', { name: 'Save as draft note' }).uncheck();
   await page.getByRole('button', { name: 'Post comment' }).click();
   await page.waitForFunction(() => document.body.innerText.includes('Comment posted'));
@@ -345,7 +379,10 @@ const submittedComments = [];
   assert.equal(await page.locator('.file-path').first().isVisible(), true, 'file names remain visible in mobile navigation');
   includeFullFile = true;
   currentMrSha = 'head-full';
+  currentVersions = [push(103, 'head-full'), ...currentVersions];
   await page.getByRole('button', { name: '↻ Refresh' }).click();
+  await page.getByRole('tab', { name: /History/ }).click();
+  await page.locator('.history-row').first().click();
   await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 3);
   await page.locator('.file-row').nth(2).click();
   await page.getByRole('button', { name: 'Load full file' }).click();
@@ -358,6 +395,7 @@ const submittedComments = [];
     const key = 'review-master:v3:https://gitlab.example:5:2:7';
     const state = JSON.parse(localStorage.getItem(key) || '{}');
     state.reviewed = { 'src/b.ts': 'blob-b' };
+    state.reviewedByVersion = { ...state.reviewedByVersion, '103': { 'src/b.ts': 'blob-b' } };
     state.autoAdvance = true;
     localStorage.setItem(key, JSON.stringify(state));
   });
