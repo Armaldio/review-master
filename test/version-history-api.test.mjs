@@ -17,7 +17,10 @@ const versions = [
 ];
 const diff = (path, content) => ({ old_path: path, new_path: path, diff: content, new_file: false, deleted_file: false, renamed_file: false });
 
-async function setup(t, { timeout = false, noChanges = false } = {}) {
+async function setup(t, { timeout = false, noChanges = false, withoutFiles = [] } = {}) {
+  const listedVersions = versions.map(version => withoutFiles.includes(version.id)
+    ? { ...version, state: 'without_files' }
+    : version);
   const originalFetch = globalThis.fetch;
   const previousConfig = process.env.REVIEW_MASTER_CONFIG;
   const directory = await mkdtemp(join(tmpdir(), 'mergepeek-version-api-'));
@@ -29,16 +32,16 @@ async function setup(t, { timeout = false, noChanges = false } = {}) {
     const url = new URL(String(input));
     requests.push({ url, method: init.method || 'GET' });
     if (url.pathname.endsWith('/api/v4/user')) return new Response(JSON.stringify({ id: 5, username: 'reviewer' }), { status: 200 });
-    if (url.pathname.endsWith('/merge_requests/7/versions')) return new Response(JSON.stringify(versions), { status: 200 });
+    if (url.pathname.endsWith('/merge_requests/7/versions')) return new Response(JSON.stringify(listedVersions), { status: 200 });
     if (url.pathname.endsWith('/merge_requests/7')) return new Response(JSON.stringify({
       id: 77, iid: 7, title: 'Amended MR', target_branch: 'main', source_branch: 'feature',
       sha: 'amended-v3', diff_refs: { base_sha: 'target-base', head_sha: 'amended-v3', start_sha: 'target-base' },
     }), { status: 200 });
     const version = url.pathname.match(/\/versions\/(\d+)$/);
     if (version) {
-      const metadata = versions.find(item => item.id === Number(version[1]));
+      const metadata = listedVersions.find(item => item.id === Number(version[1]));
       const cumulativeDiff = diff('src/app.ts', `@@ -1 +1 @@\n-previous cumulative state\n+full MR state at ${metadata.head_commit_sha}\n`);
-      return new Response(JSON.stringify({ ...metadata, diffs: [cumulativeDiff] }), { status: 200 });
+      return new Response(JSON.stringify({ ...metadata, diffs: metadata.state === 'without_files' ? [] : [cumulativeDiff] }), { status: 200 });
     }
     if (url.pathname.endsWith('/repository/compare')) {
       const from = url.searchParams.get('from');
@@ -115,4 +118,23 @@ test('a push with no net file changes stays empty instead of falling back to the
   const result = await call('version-diff', { versionId: 103 });
   assert.deepEqual(result.diffs, []);
   assert.equal(result.versionIsInitial, false);
+});
+
+test('versions without stored files recover their exact diff from the version SHAs', async t => {
+  const { call, requests } = await setup(t, { withoutFiles: [102, 101] });
+
+  const older = await call('version-diff', { versionId: 102 });
+  const olderCompare = requests.filter(request => request.url.pathname.endsWith('/repository/compare')).at(-1);
+  assert.equal(older.selectedVersionId, 102);
+  assert.equal(olderCompare.url.searchParams.get('from'), 'initial-v1');
+  assert.equal(olderCompare.url.searchParams.get('to'), 'amended-v2');
+  assert.match(older.diffs[0].diff, /-initial-v1\n\+amended-v2/, 'a missing stored snapshot must use the selected push delta');
+
+  const initial = await call('version-diff', { versionId: 101 });
+  const initialCompare = requests.filter(request => request.url.pathname.endsWith('/repository/compare')).at(-1);
+  assert.equal(initial.versionIsInitial, true);
+  assert.equal(initial.mr.diff_refs.base_sha, 'target-base');
+  assert.equal(initialCompare.url.searchParams.get('from'), 'target-base');
+  assert.equal(initialCompare.url.searchParams.get('to'), 'initial-v1');
+  assert.match(initial.diffs[0].diff, /-target-base\n\+initial-v1/, 'the first push compares its base directly with its head');
 });

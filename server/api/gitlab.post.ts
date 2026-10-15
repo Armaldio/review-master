@@ -37,26 +37,25 @@ async function diffForVersion(base: string, project: string, token: string, vers
   if (snapshot.id !== version.id || snapshot.head_commit_sha !== version.head_commit_sha) {
     throw createError({ statusCode: 502, statusMessage: `GitLab returned stale data for push version ${version.id}. Refresh history and try again.` });
   }
-  if (snapshot.state && snapshot.state !== 'collected') {
+  if (snapshot.state && snapshot.state !== 'collected' && snapshot.state !== 'without_files') {
     throw createError({ statusCode: 502, statusMessage: `GitLab has not collected a complete diff for push version ${version.id}.` });
   }
 
   const previous = versions[index + 1];
   let diffs: Diff[];
   let refs: { base_sha: string; head_sha: string; start_sha: string };
-  if (previous) {
-    const from = previous.head_commit_sha;
+  if (previous || snapshot.state === 'without_files' || !Array.isArray(snapshot.diffs)) {
+    const from = previous?.head_commit_sha || version.base_commit_sha;
     const to = version.head_commit_sha;
     const comparison = await gitlab<CompareResult>(`${project}/repository/compare?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&straight=true`, token);
-    if (comparison.compare_timeout || !Array.isArray(comparison.diffs)) {
+    if (comparison.compare_timeout || !Array.isArray(comparison.diffs) || comparison.diffs.some(file => file.collapsed || file.too_large)) {
       throw createError({ statusCode: 502, statusMessage: `GitLab could not return a complete version diff for push ${version.id}. Refresh history and try again.` });
     }
     diffs = comparison.diffs;
-    refs = { base_sha: from, head_sha: to, start_sha: from };
+    refs = previous
+      ? { base_sha: from, head_sha: to, start_sha: from }
+      : { base_sha: version.base_commit_sha, head_sha: to, start_sha: version.start_commit_sha };
   } else {
-    if (!Array.isArray(snapshot.diffs)) {
-      throw createError({ statusCode: 502, statusMessage: `GitLab could not return the initial diff for push version ${version.id}. Refresh history and try again.` });
-    }
     diffs = snapshot.diffs;
     refs = { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha };
   }
