@@ -79,6 +79,18 @@ test('GitLab API helper withholds credentials from redirects and exposes rate li
   });
 });
 
+test('GitLab network failures produce a safe actionable connection error', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => { throw new TypeError('fetch failed: private socket details'); };
+  await assert.rejects(() => gitlab('https://gitlab.example/api/v4/user', 'token-value'), error => {
+    assert.equal(error.statusCode, 502);
+    assert.equal(error.statusMessage, 'Could not reach GitLab. Check your connection and retry.');
+    assert.doesNotMatch(error.message, /private socket details|token-value/);
+    return true;
+  });
+});
+
 test('explains stale GitLab diff positions so reviewers can refresh and reselect a line', async t => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });

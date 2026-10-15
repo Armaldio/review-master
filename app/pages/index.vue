@@ -407,6 +407,12 @@ watch(() => app.selectedPath.value, path => {
   comment.value = app.drafts.value[`comment:${fileName(file)}`] || '';
   inlinePosition.value = null;
 });
+watch(() => {
+  const mr = app.review.value?.mr;
+  return mr ? `${mr.sha}:${mr.diff_refs?.base_sha || ''}:${mr.diff_refs?.head_sha || ''}:${mr.diff_refs?.start_sha || ''}` : '';
+}, (identity, previous) => {
+  if (previous && identity !== previous) inlinePosition.value = null;
+}, { flush: 'post' });
 watch(previewOpen, open => { if (open && !previewCandidates.value.length) void discoverPreview(); });
 watch(comment, saveDraft);
 watch(summary, value => { if (summaryOpen.value) app.setDraft('mr:summary', value); });

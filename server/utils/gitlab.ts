@@ -139,7 +139,12 @@ export async function getGitLabContext(event: H3Event, value: string) {
 }
 
 export async function gitlab<T>(url: string, token: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, { ...init, redirect: 'manual', headers: { Authorization: `Bearer ${token}`, ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers } });
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, redirect: 'manual', headers: { Authorization: `Bearer ${token}`, ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers } });
+  } catch {
+    throw createError({ statusCode: 502, statusMessage: 'Could not reach GitLab. Check your connection and retry.' });
+  }
   if (response.status >= 300 && response.status < 400) throw createError({ statusCode: 502, statusMessage: 'GitLab redirected the API request; credentials were withheld' });
   if (!response.ok) {
     let stalePosition = false;

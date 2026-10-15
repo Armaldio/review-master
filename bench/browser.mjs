@@ -97,11 +97,10 @@ try {
     await page.waitForFunction(() => { const input = document.querySelector('.filter-toggle input'); return input && !input.disabled; }, undefined, { timeout: 30_000 });
     if (!apiActions.includes('verify-owners')) throw new Error(`${scenario.name}: assigned reviewer ownership was not checked`);
     const ownerEligibilityMs = performance.now() - started;
-    const onlyMine = page.getByRole('checkbox', { name: 'Only my files' });
-    await onlyMine.check();
+    const showAll = page.getByRole('checkbox', { name: 'Show all files' });
     await page.waitForFunction(() => document.querySelectorAll('.file-row').length === 1, undefined, { timeout: 15_000 });
     const positivelyOwnedFilesShown = await page.locator('.file-row').count();
-    await onlyMine.uncheck();
+    await showAll.check();
     await page.waitForFunction(expected => document.querySelectorAll('.file-row').length === expected, paths.length);
     const highlightSettled = await page.evaluate(async () => {
       const startedAt = performance.now();
