@@ -1,5 +1,11 @@
 # @armaldio/mergepeek
 
+## 3.1.0
+
+### Minor Changes
+
+- e4bc4f9: Review push history with incremental diffs for each GitLab merge request version.
+
 ## 3.0.5
 
 ### Patch Changes
