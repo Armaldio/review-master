@@ -100,6 +100,7 @@ const totalChangedLines = computed(() => progressSegments.value.reduce((total, s
 const reviewedChangedLines = computed(() => progressSegments.value.reduce((total, segment) => total + (segment.reviewed ? segment.changedLines : 0), 0));
 const progress = computed(() => totalProgressWeight.value ? Math.round(reviewedProgressWeight.value * 100 / totalProgressWeight.value) : 0);
 const discussionList = computed(() => app.review.value?.discussions || []);
+const hasActiveFileDiscussion = computed(() => discussionList.value.some(thread => thread.notes?.some((note: any) => note.position?.new_path === activeFile.value?.new_path || note.position?.old_path === activeFile.value?.old_path)));
 const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
@@ -575,7 +576,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           </div>
           <div class="comment-panel">
             <p v-if="!lineCommentsAvailable" class="history-comment-warning" role="status">Line comments are disabled on incremental historical diffs because GitLab’s position references may not match the push delta. File comments and draft notes remain available.</p>
-            <section class="draft-notes" aria-label="GitLab draft notes">
+            <section class="draft-notes" :class="{ 'has-draft-notes': draftNoteList.length > 0 }" aria-label="GitLab draft notes">
               <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
               <p v-if="!draftNoteList.length">No GitLab draft notes.</p>
               <article v-for="note in draftNoteList" :key="note.id" class="note draft-note">
@@ -593,12 +594,15 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
                 </template>
               </article>
             </section>
-            <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
-              <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
-              <!-- eslint-disable-next-line vue/no-v-html -->
-              <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="reaction in reactions" :key="reaction.name" class="reaction" :aria-label="`React with ${reaction.label}`" @click="toggleReaction(note, reaction.name)">{{ (note.award_emoji || []).filter((award: any) => award.name === reaction.name).length ? `${reaction.emoji} ${(note.award_emoji || []).filter((award: any) => award.name === reaction.name).length}` : reaction.emoji }}</button></div></article>
-              <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
-              <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
+            <details v-if="discussionList.length" class="discussion-group" :open="hasActiveFileDiscussion">
+              <summary>Discussions <span>{{ discussionList.length }}</span></summary>
+              <details v-for="thread in discussionList" :key="thread.id" class="discussion" :open="thread.notes?.some((note: any) => note.position?.new_path === activeFile?.new_path || note.position?.old_path === activeFile?.old_path)">
+                <summary>{{ thread.notes?.[0]?.author?.name || 'Review comment' }} <span>{{ thread.resolved ? 'Resolved' : '' }}</span></summary>
+                <!-- eslint-disable-next-line vue/no-v-html -->
+                <article v-for="note in thread.notes || []" :key="note.id" class="note"><strong>{{ note.author?.name }}</strong><span class="note-line">{{ note.position?.new_line ? `line ${note.position.new_line}` : 'file discussion' }}</span><template v-if="editingNote === String(note.id)"><textarea v-model="editText" rows="3"/><button class="quiet" @click="saveEditedNote(thread.id, note.id)">Save edit</button><button class="quiet" @click="editingNote = ''">Cancel</button></template><div v-else class="markdown" v-html="renderMarkdown(note.body)"/><div v-if="String(note.author?.id) === String(app.review.value.user.id)" class="note-actions"><button class="quiet" @click="startEdit(note)">Edit</button><button class="quiet" @click="deleteNote(thread.id, note.id)">Delete</button></div><div class="reactions"><button v-for="reaction in reactions" :key="reaction.name" class="reaction" :aria-label="`React with ${reaction.label}`" @click="toggleReaction(note, reaction.name)">{{ (note.award_emoji || []).filter((award: any) => award.name === reaction.name).length ? `${reaction.emoji} ${(note.award_emoji || []).filter((award: any) => award.name === reaction.name).length}` : reaction.emoji }}</button></div></article>
+                <form v-if="replyTo === thread.id" class="reply-form" @submit.prevent="sendReply(thread.id)"><textarea v-model="replyText" rows="2" aria-label="Reply to discussion" placeholder="Write a reply…" :disabled="replyBusy"/><button class="approve" :disabled="replyBusy || !replyText.trim()">{{ replyBusy ? 'Sending…' : commentDraft ? 'Save draft reply' : 'Send reply' }}</button></form><button v-else class="quiet" @click="showReply(thread.id)">Reply</button>
+                <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
+              </details>
             </details>
             <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add a file comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
           </div>
