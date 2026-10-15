@@ -36,6 +36,11 @@ const versionData = versionId => {
     diffs: data().diffs.map(file => ({ ...file, identity: null })),
     selectedVersionId: version.id,
     versionIsInitial: !previous,
+    versionIsLatest: index === 0,
+    commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
+    commentableLines: index === 0 && previous ? [
+      { old_path: 'src/b.ts', new_path: 'src/b.ts', old_lines: [], new_lines: [1] },
+    ] : [],
   };
 };
 async function availablePort() {
@@ -267,28 +272,49 @@ const submittedComments = [];
   await page.locator('diffs-container').locator('[data-line]').first().click();
   await page.locator('#review-comment').fill('Comment draft survives a diff update');
   assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/);
-  currentMrSha = 'head2';
-  currentVersions = [push(102, 'head2'), push(101, 'head1')];
+  currentMrSha = 'head3';
+  currentVersions = [push(103, 'head3'), push(102, 'head2'), push(101, 'head1')];
   await page.getByRole('button', { name: '↻ Refresh' }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('.top-actions button')].some(button => button.textContent?.trim() === '↻ Refresh' && !button.disabled));
   assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'polling keeps the open file on the selected push');
   assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/, 'the selected historical diff retains its valid line position');
   assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'polling keeps the unsent text');
   await page.getByRole('tab', { name: /History/ }).click();
-  assert.equal(await page.locator('.history-row').count(), 2, 'the new push appears as a separate history entry');
-  assert.match(await page.locator('.history-row').first().innerText(), /head2[\s\S]*New/);
+  assert.equal(await page.locator('.history-row').count(), 3, 'the new pushes appear as separate history entries');
+  assert.match(await page.locator('.history-row').first().innerText(), /head3[\s\S]*New/);
   assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'switching Files and History keeps the selected file');
   await page.locator('.history-row').first().click();
-  await page.getByText('Line comments are disabled on incremental historical diffs', { exact: false }).waitFor();
-  assert.match(await page.locator('.comment-form > label').innerText(), /Add a file comment/, 'incremental diff navigation clears incompatible line positions');
+  await page.getByText('Inline comments are available only on changed lines', { exact: false }).waitFor();
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add an MR-level comment/);
+  const validIncrementalLine = page.locator('diffs-container').locator('[data-line]').filter({ hasText: 'const newB = 2;' }).last();
+  await validIncrementalLine.click();
+  assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/, 'a changed line verified against GitLab’s current MR diff keeps inline review available');
+  await page.getByRole('checkbox', { name: 'Save as draft note' }).uncheck();
+  await page.getByRole('button', { name: 'Post comment' }).click();
+  await page.waitForFunction(() => document.querySelector('#review-comment')?.value === '');
+  assert.deepEqual(submittedComments.at(-1).position, {
+    base_sha: 'base-head3', head_sha: 'head3', start_sha: 'base-head3', old_path: 'src/b.ts', new_path: 'src/b.ts', position_type: 'text', new_line: 1,
+  }, 'inline comments use GitLab’s official current version refs and the verified line number');
+  const unsafeIncrementalLine = page.locator('diffs-container').locator('[data-line]').filter({ hasText: 'const oldB = 1;' }).last();
+  await unsafeIncrementalLine.click();
+  await page.getByText('does not contain this changed line', { exact: false }).waitFor();
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add an MR-level comment/, 'unverified lines fall back with an accurate MR-level label');
+  await page.locator('#review-comment').fill('Unanchored line fallback');
+  await page.getByRole('button', { name: 'Post comment' }).click();
+  await page.waitForFunction(() => document.querySelector('#review-comment')?.value === '');
+  assert.equal(submittedComments.at(-1).position, undefined, 'an unverified incremental line is never sent with guessed coordinates');
+  await page.locator('#review-comment').fill('Comment draft survives a diff update');
+  await page.getByRole('tab', { name: /History/ }).click();
+  await page.locator('.history-row').nth(1).click();
+  await page.getByText('Inline comments are unavailable on this historical push', { exact: false }).waitFor();
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add an MR-level comment/, 'older incremental pushes use an accurately labeled MR-level fallback');
   assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'version navigation keeps the pending comment draft');
   assert.equal(await page.getByRole('button', { name: 'Mark reviewed', exact: true }).isVisible(), true, 'review state from the prior push is not inherited');
   await page.getByRole('tab', { name: /History/ }).click();
-  const selectedHistoryRow = await page.locator('.history-row').first().innerText();
+  const selectedHistoryRow = await page.locator('.history-row').nth(1).innerText();
   assert.match(selectedHistoryRow, /Not reviewed[\s\S]*Selected/);
   assert.doesNotMatch(selectedHistoryRow, /\bNew\b/, 'opening a push clears its unread indication');
-  await page.locator('.history-row').first().click();
-  await page.getByRole('checkbox', { name: 'Save as draft note' }).uncheck();
+  await page.locator('.history-row').nth(1).click();
   await page.getByRole('button', { name: 'Post comment' }).click();
   await page.waitForFunction(() => document.body.innerText.includes('Comment posted'));
   assert.equal(submittedComments.at(-1).position, undefined, 'a refreshed comment cannot submit old diff references');
@@ -340,7 +366,7 @@ const submittedComments = [];
   await page.waitForFunction(() => document.querySelector('.draft-notes')?.textContent?.includes('No GitLab draft notes') ?? false);
   assert.ok(apiCalls.includes('edit-draft-note'));
   assert.ok(apiCalls.includes('publish-drafts'));
-  await page.getByLabel('Add a file comment').locator('..').locator('textarea').fill('Keep this draft');
+  await page.getByLabel('Add an MR-level comment').locator('..').locator('textarea').fill('Keep this draft');
   await page.getByRole('button', { name: '↻ Refresh' }).click();
   await page.locator('.file-row').nth(1).click();
   await page.locator('.file-row').nth(0).click();
@@ -379,7 +405,7 @@ const submittedComments = [];
   assert.equal(await page.locator('.file-path').first().isVisible(), true, 'file names remain visible in mobile navigation');
   includeFullFile = true;
   currentMrSha = 'head-full';
-  currentVersions = [push(103, 'head-full'), ...currentVersions];
+  currentVersions = [push(104, 'head-full'), ...currentVersions];
   await page.getByRole('button', { name: '↻ Refresh' }).click();
   await page.getByRole('tab', { name: /History/ }).click();
   await page.locator('.history-row').first().click();
@@ -395,7 +421,7 @@ const submittedComments = [];
     const key = 'review-master:v3:https://gitlab.example:5:2:7';
     const state = JSON.parse(localStorage.getItem(key) || '{}');
     state.reviewed = { 'src/b.ts': 'blob-b' };
-    state.reviewedByVersion = { ...state.reviewedByVersion, '103': { 'src/b.ts': 'blob-b' } };
+    state.reviewedByVersion = { ...state.reviewedByVersion, '104': { 'src/b.ts': 'blob-b' } };
     state.autoAdvance = true;
     localStorage.setItem(key, JSON.stringify(state));
   });

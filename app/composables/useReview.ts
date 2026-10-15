@@ -3,7 +3,7 @@ import { latestVersionId as findLatestVersionId, pathForSelectedVersion, reconci
 
 export type DiffFile = { old_path: string; new_path: string; diff: string; old_id?: string; new_id?: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; identity: string | null };
 export type DiffVersion = { id: number; created_at: string; head_commit_sha: string; base_commit_sha: string; start_commit_sha: string; state?: string; real_size?: string };
-export type ReviewData = { mr: any; user: any; project: any; diffs: DiffFile[]; versions: DiffVersion[]; selectedVersionId: number; versionIsInitial: boolean; discussions: any[]; draftNotes: any[]; codeowners: any[]; ownerStatus?: Record<string, boolean | null>; ownerWarning?: string };
+export type ReviewData = { mr: any; user: any; project: any; diffs: DiffFile[]; versions: DiffVersion[]; selectedVersionId: number; versionIsInitial: boolean; versionIsLatest?: boolean; commentRefs?: { base_sha: string; head_sha: string; start_sha: string }; commentableLines?: Array<{ old_path: string; new_path: string; old_lines: number[]; new_lines: number[] }>; discussions: any[]; draftNotes: any[]; codeowners: any[]; ownerStatus?: Record<string, boolean | null>; ownerWarning?: string };
 
 const fileName = (file: DiffFile) => file.deleted_file ? file.old_path : file.new_path;
 
@@ -144,7 +144,7 @@ export function useReview() {
     if (selectedVersionId.value === versionId) { markVersionSeen(versionId); return true; }
     busy.value = true;
     try {
-      const data = await call<Pick<ReviewData, 'mr' | 'diffs' | 'versions' | 'selectedVersionId' | 'versionIsInitial'>>('version-diff', { versionId });
+      const data = await call<Pick<ReviewData, 'mr' | 'diffs' | 'versions' | 'selectedVersionId' | 'versionIsInitial' | 'versionIsLatest' | 'commentRefs' | 'commentableLines'>>('version-diff', { versionId });
       const previousPath = selectedPath.value;
       review.value = { ...review.value, ...data };
       selectedVersionId.value = data.selectedVersionId;

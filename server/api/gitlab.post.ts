@@ -2,6 +2,7 @@ import { discoverPreviews, getGitLabContext, gitlab, validatePreviewUrl } from '
 import { logReviewActivity } from '../utils/review-activity.ts';
 import { readMembership, writeMembership, deleteMembership } from '../utils/membership-cache.ts';
 import { codeownersForPath, parseCodeowners } from '../../shared/codeowners.ts';
+import { commentableLinesForDelta } from '../utils/diff-comment-positions.ts';
 
 type Mr = { id: number; title: string; description: string; state: string; web_url: string; source_branch: string; target_branch: string; sha: string; diff_refs?: { base_sha: string; head_sha: string; start_sha: string }; draft?: boolean; author: { username: string; name: string }; project_id: number; source_project_id: number; target_project_id: number };
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
@@ -34,7 +35,8 @@ async function diffForVersion(base: string, project: string, token: string, vers
   const version = versions[index]!;
   const versionUrl = `${base}/versions/${version.id}`;
   const snapshot = await gitlab<VersionDiff>(versionUrl, token);
-  if (snapshot.id !== version.id || snapshot.head_commit_sha !== version.head_commit_sha) {
+  if (snapshot.id !== version.id || snapshot.head_commit_sha !== version.head_commit_sha
+    || snapshot.base_commit_sha !== version.base_commit_sha || snapshot.start_commit_sha !== version.start_commit_sha) {
     throw createError({ statusCode: 502, statusMessage: `GitLab returned stale data for push version ${version.id}. Refresh history and try again.` });
   }
   if (snapshot.state && snapshot.state !== 'collected' && snapshot.state !== 'without_files') {
@@ -63,8 +65,13 @@ async function diffForVersion(base: string, project: string, token: string, vers
   return {
     selectedVersionId: version.id,
     versionIsInitial: !previous,
+    versionIsLatest: index === 0,
     versions,
     mrDiffRefs: refs,
+    commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
+    commentableLines: previous && index === 0 && snapshot.state === 'collected' && Array.isArray(snapshot.diffs)
+      ? commentableLinesForDelta(diffs, snapshot.diffs)
+      : [],
     mrSha: version.head_commit_sha,
     diffs: diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })),
   };
@@ -93,6 +100,9 @@ export default defineEventHandler(async event => {
         versions: selected.versions,
         selectedVersionId: selected.selectedVersionId,
         versionIsInitial: selected.versionIsInitial,
+        versionIsLatest: selected.versionIsLatest,
+        commentRefs: selected.commentRefs,
+        commentableLines: selected.commentableLines,
         discussions: [], draftNotes: [], codeowners: [], ownerStatus: {},
       };
     }
@@ -110,6 +120,9 @@ export default defineEventHandler(async event => {
         versions: selected.versions,
         selectedVersionId: selected.selectedVersionId,
         versionIsInitial: selected.versionIsInitial,
+        versionIsLatest: selected.versionIsLatest,
+        commentRefs: selected.commentRefs,
+        commentableLines: selected.commentableLines,
       };
     }
     case 'file-identities': {

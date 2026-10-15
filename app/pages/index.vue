@@ -30,6 +30,7 @@ const expandedFiles = ref<Record<string, { oldContent: string | null; newContent
 const expandingPath = ref('');
 const comment = ref('');
 const inlinePosition = ref<Record<string, any> | null>(null);
+const lineCommentFeedback = ref('');
 const commentDraft = ref(true);
 const commentBusy = ref(false);
 const draftNotesBusy = ref(false);
@@ -106,7 +107,13 @@ const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((revie
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
 const hasUnknownOwner = computed(() => !app.ownershipPending.value && app.files.value.some(file => matchOwner(fileName(file)) === null));
-const lineCommentsAvailable = computed(() => app.review.value?.versionIsInitial === true);
+const currentIncrementalVersion = computed(() => app.selectedVersionId.value === app.latestVersionId.value && !app.review.value?.versionIsInitial);
+const lineCommentStatus = computed(() => {
+  if (lineCommentFeedback.value) return lineCommentFeedback.value;
+  if (app.review.value?.versionIsInitial) return '';
+  if (currentIncrementalVersion.value) return "Inline comments are available only on changed lines that GitLab also exposes in the current MR diff. Other comments are posted at MR level.";
+  return 'Inline comments are unavailable on this historical push. Comments below are posted at MR level.';
+});
 const membershipCheckedLabel = computed(() => {
   const value = app.membershipCheckedAt.value;
   if (!value || !Number.isFinite(Date.parse(value))) return '';
@@ -169,6 +176,7 @@ async function selectHistoryVersion(versionId: number) {
   sidebarTab.value = 'files';
   expandedFiles.value = {};
   inlinePosition.value = null;
+  lineCommentFeedback.value = '';
   const selectedFile = app.files.value.find(file => fileName(file) === app.selectedPath.value);
   if (selectedFile && query.value && !fileName(selectedFile).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
   await nextTick();
@@ -211,19 +219,45 @@ async function sendComment() {
   } catch { /* error is shown in the header */ }
   finally { commentBusy.value = false; }
 }
-function positionBase() {
-  const refs = app.review.value?.mr.diff_refs;
+function positionBase(useOfficialVersionRefs = false) {
+  const refs = useOfficialVersionRefs ? app.review.value?.commentRefs : app.review.value?.mr.diff_refs;
   if (!refs?.base_sha || !refs?.head_sha || !refs?.start_sha || !activeFile.value) return null;
   return { base_sha: refs.base_sha, head_sha: refs.head_sha, start_sha: refs.start_sha, old_path: activeFile.value.old_path, new_path: activeFile.value.new_path, position_type: 'text' };
 }
 function selectDiffLine(line: { lineNumber: number; side: 'new' | 'old' }) {
-  if (!lineCommentsAvailable.value) { inlinePosition.value = null; return; }
-  const base = positionBase();
+  const review = app.review.value;
+  const incrementalLatest = currentIncrementalVersion.value;
+  if (!review?.versionIsInitial && !incrementalLatest) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'This historical line has no verified position in GitLab’s current MR diff. The comment will be posted at MR level.';
+    return;
+  }
+  if (incrementalLatest) {
+    const match = review?.commentableLines?.find(item => item.old_path === activeFile.value?.old_path && item.new_path === activeFile.value?.new_path);
+    const coordinates = line.side === 'new' ? match?.new_lines : match?.old_lines;
+    if (!coordinates?.includes(line.lineNumber)) {
+      inlinePosition.value = null;
+      lineCommentFeedback.value = 'GitLab’s current MR diff does not contain this changed line, so it cannot be safely anchored. The comment will be posted at MR level.';
+      return;
+    }
+  }
+  const base = positionBase(Boolean(incrementalLatest));
   if (!base) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
+  lineCommentFeedback.value = '';
   inlinePosition.value = { ...base, [line.side === 'new' ? 'new_line' : 'old_line']: line.lineNumber };
 }
 function selectDiffRange(range: { start: number; end: number; side?: string; endSide?: string }) {
-  if (!lineCommentsAvailable.value) { inlinePosition.value = null; return; }
+  const review = app.review.value;
+  if (currentIncrementalVersion.value) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'Multiline comments are not enabled for incremental pushes because GitLab line codes cannot be matched safely. The comment will be posted at MR level.';
+    return;
+  }
+  if (!review?.versionIsInitial) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = 'Multiline comments are unavailable on this historical push. The comment will be posted at MR level.';
+    return;
+  }
   const base = positionBase();
   if (!base || !activeFile.value) { app.error.value = 'GitLab has not provided current diff references for this file.'; return; }
   const point = (line: number, side?: string) => {
@@ -233,6 +267,7 @@ function selectDiffRange(range: { start: number; end: number; side?: string; end
     const blob = isNew ? activeFile.value!.new_id : activeFile.value!.old_id;
     return { line_code: `${blob || app.review.value!.mr.sha}_${oldLine ?? 0}_${newLine ?? 0}`, type: isNew ? 'new' : 'old', old_line: oldLine, new_line: newLine };
   };
+  lineCommentFeedback.value = '';
   inlinePosition.value = { ...base, line_range: { start: point(range.start, range.side), end: point(range.end, range.endSide) } };
 }
 async function expandFile(file: any) {
@@ -436,13 +471,20 @@ watch(() => app.selectedPath.value, path => {
   if (!file) return;
   comment.value = app.drafts.value[`comment:${fileName(file)}`] || '';
   inlinePosition.value = null;
+  lineCommentFeedback.value = '';
 });
 watch(() => {
   const mr = app.review.value?.mr;
   return mr ? `${mr.sha}:${mr.diff_refs?.base_sha || ''}:${mr.diff_refs?.head_sha || ''}:${mr.diff_refs?.start_sha || ''}` : '';
 }, (identity, previous) => {
-  if (previous && identity !== previous) inlinePosition.value = null;
+  if (previous && identity !== previous) { inlinePosition.value = null; lineCommentFeedback.value = ''; }
 }, { flush: 'post' });
+watch(() => app.latestVersionId.value, (versionId, previous) => {
+  if (previous && versionId !== previous && !app.review.value?.versionIsInitial && app.selectedVersionId.value !== versionId) {
+    inlinePosition.value = null;
+    lineCommentFeedback.value = '';
+  }
+});
 watch(previewOpen, open => { if (open && !previewCandidates.value.length) void discoverPreview(); });
 watch(comment, saveDraft);
 watch(() => app.addedVersionIds.value.join(','), ids => {
@@ -575,7 +617,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
             </template>
           </div>
           <div class="comment-panel">
-            <p v-if="!lineCommentsAvailable" class="history-comment-warning" role="status">Line comments are disabled on incremental historical diffs because GitLab’s position references may not match the push delta. File comments and draft notes remain available.</p>
+            <p v-if="lineCommentStatus" class="history-comment-warning" role="status">{{ lineCommentStatus }}</p>
             <section class="draft-notes" :class="{ 'has-draft-notes': draftNoteList.length > 0 }" aria-label="GitLab draft notes">
               <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
               <p v-if="!draftNoteList.length">No GitLab draft notes.</p>
@@ -604,7 +646,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
                 <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
               </details>
             </details>
-            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add a file comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
+            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add an MR-level comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
           </div>
         </template>
         <div v-else class="empty-state">

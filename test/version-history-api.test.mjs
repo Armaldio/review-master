@@ -17,7 +17,7 @@ const versions = [
 ];
 const diff = (path, content) => ({ old_path: path, new_path: path, diff: content, new_file: false, deleted_file: false, renamed_file: false });
 
-async function setup(t, { timeout = false, noChanges = false, withoutFiles = [] } = {}) {
+async function setup(t, { timeout = false, noChanges = false, withoutFiles = [], officialLine = 1 } = {}) {
   const listedVersions = versions.map(version => withoutFiles.includes(version.id)
     ? { ...version, state: 'without_files' }
     : version);
@@ -40,7 +40,7 @@ async function setup(t, { timeout = false, noChanges = false, withoutFiles = [] 
     const version = url.pathname.match(/\/versions\/(\d+)$/);
     if (version) {
       const metadata = listedVersions.find(item => item.id === Number(version[1]));
-      const cumulativeDiff = diff('src/app.ts', `@@ -1 +1 @@\n-previous cumulative state\n+full MR state at ${metadata.head_commit_sha}\n`);
+      const cumulativeDiff = diff('src/app.ts', `@@ -${officialLine} +${officialLine} @@\n-previous cumulative state\n+full MR state at ${metadata.head_commit_sha}\n`);
       return new Response(JSON.stringify({ ...metadata, diffs: metadata.state === 'without_files' ? [] : [cumulativeDiff] }), { status: 200 });
     }
     if (url.pathname.endsWith('/repository/compare')) {
@@ -74,6 +74,9 @@ test('bootstrap selects the latest push and compares adjacent snapshots after am
   const loaded = await call('bootstrap');
 
   assert.equal(loaded.selectedVersionId, 103);
+  assert.equal(loaded.versionIsLatest, true);
+  assert.deepEqual(loaded.commentRefs, { base_sha: 'target-base', head_sha: 'amended-v3', start_sha: 'target-base' }, 'inline positions use the selected version refs from GitLab');
+  assert.deepEqual(loaded.commentableLines, [{ old_path: 'src/app.ts', new_path: 'src/app.ts', old_lines: [1], new_lines: [1] }], 'only selected delta lines present in the official version diff are commentable');
   assert.deepEqual(loaded.versions.map(version => version.id), [103, 102, 101], 'history stays newest first');
   assert.equal(loaded.mr.sha, 'amended-v3');
   assert.equal(loaded.mr.diff_refs.base_sha, 'amended-v2', 'the selected incremental diff uses its prior snapshot as the base');
@@ -118,6 +121,18 @@ test('a push with no net file changes stays empty instead of falling back to the
   const result = await call('version-diff', { versionId: 103 });
   assert.deepEqual(result.diffs, []);
   assert.equal(result.versionIsInitial, false);
+});
+
+test('does not expose guessed inline positions when the current MR diff cannot match a delta line', async t => {
+  const { call } = await setup(t, { officialLine: 25 });
+  const latest = await call('bootstrap');
+
+  assert.equal(latest.versionIsLatest, true);
+  assert.deepEqual(latest.commentableLines, [{ old_path: 'src/app.ts', new_path: 'src/app.ts', old_lines: [], new_lines: [] }]);
+
+  const historical = await call('version-diff', { versionId: 102 });
+  assert.equal(historical.versionIsLatest, false);
+  assert.deepEqual(historical.commentableLines, [], 'historical deltas never reuse current inline coordinates');
 });
 
 test('versions without stored files recover their exact diff from the version SHAs', async t => {
