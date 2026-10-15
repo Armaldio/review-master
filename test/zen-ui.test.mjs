@@ -1,0 +1,302 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
+
+const root = new URL('../', import.meta.url).pathname;
+const mrUrl = 'https://gitlab.example/group/app/-/merge_requests/7';
+const mr = { id: 77, iid: 7, project_id: 2, title: 'Review a focused change', description: '', state: 'opened', web_url: mrUrl, source_branch: 'feature', target_branch: 'main', sha: 'head-two', diff_refs: { base_sha: 'base-two', head_sha: 'head-two', start_sha: 'base-two' }, author: { username: 'reviewer', name: 'Reviewer' } };
+const reviewFiles = [
+  { old_path: 'src/a.ts', new_path: 'src/a.ts', diff: '@@ -1 +1 @@\n-oldA\n+newA\n', new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-a' },
+  { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: '@@ -1 +1 @@\n-oldB\n+newB\n', new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
+];
+const push = (id, sha) => ({ id, created_at: `2026-10-${String(id + 13).padStart(2, '0')}T12:00:00Z`, head_commit_sha: sha, base_commit_sha: `base-${sha}`, start_commit_sha: `base-${sha}`, state: 'collected' });
+const zenCommit = { id: 'c0ffee1234567890c0ffee1234567890c0ffee12', short_id: 'c0ffee12', title: 'Correct the commit-specific behavior', author_name: 'Reviewer', committed_date: '2026-10-15T12:00:00Z' };
+const commitFiles = [{ old_path: 'src/commit.ts', new_path: 'src/commit.ts', diff: '@@ -1 +1 @@\n-const value = "old";\n+const value = "commit inspection";\n', new_file: false, deleted_file: false, renamed_file: false, identity: null }];
+
+async function availablePort() {
+  const server = createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
+test('Zen panels preserve review context, inspect real commits, and work with keyboard and touch', { timeout: 120_000 }, async t => {
+  let versions = [push(2, 'head-two'), push(1, 'head-one')];
+  const calls = [];
+  const submittedComments = [];
+  const port = await availablePort();
+  const nuxtCli = fileURLToPath(new URL('../node_modules/nuxt/bin/nuxt.mjs', import.meta.url));
+  const child = spawn(process.execPath, [nuxtCli, 'dev', '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: process.env,
+    detached: process.platform !== 'win32',
+  });
+  const serverLogs = [];
+  child.stdout.on('data', value => serverLogs.push(value.toString()));
+  child.stderr.on('data', value => serverLogs.push(value.toString()));
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    try {
+      if (process.platform === 'win32') child.kill('SIGTERM');
+      else process.kill(-child.pid, 'SIGTERM');
+    } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    if (!await Promise.race([exited.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 5_000))])) {
+      try {
+        if (process.platform === 'win32') child.kill('SIGKILL');
+        else process.kill(-child.pid, 'SIGKILL');
+      } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      await exited;
+    }
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let ready = false;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try { if ((await fetch(baseUrl)).ok) { ready = true; break; } } catch { /* wait for Nuxt */ }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  assert.equal(ready, true, `Nuxt dev server should start. ${serverLogs.slice(-8).join('')}`);
+  browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, hasTouch: true });
+  const page = await context.newPage();
+  const errors = [];
+  let emptyReview = false;
+  page.on('pageerror', error => errors.push(error.message));
+  await context.route('**/api/gitlab', async route => {
+    const request = route.request().postDataJSON();
+    calls.push(request.action);
+    const versionIndex = versionId => versions.findIndex(version => version.id === versionId);
+    const versionData = versionId => {
+      const index = versionIndex(versionId);
+      const version = versions[index];
+      const previous = versions[index + 1];
+      return {
+        mr: { ...mr, sha: version.head_commit_sha, diff_refs: { base_sha: previous?.head_commit_sha || version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: previous?.head_commit_sha || version.start_commit_sha } },
+        user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2 },
+        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file })), versions,
+        selectedVersionId: version.id, versionIsInitial: !previous, versionIsLatest: index === 0,
+        commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
+        commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1] }],
+        discussions: [], draftNotes: [], codeowners: [{ pattern: 'src/a.ts', owners: ['reviewer'] }], ownerStatus: { reviewer: true },
+      };
+    };
+    const result = request.action === 'bootstrap' ? versionData(versions[0].id)
+      : request.action === 'version-diff' ? versionData(Number(request.payload.versionId))
+      : request.action === 'file-identities' ? { identities: Object.fromEntries(request.payload.paths.map(path => [path, path === 'src/a.ts' ? 'blob-a' : 'blob-b'])) }
+      : request.action === 'verify-owners' ? { codeowners: [{ pattern: 'src/a.ts', owners: ['reviewer'] }], ownerStatus: { reviewer: true } }
+      : request.action === 'refresh' ? { mr: { ...mr, sha: versions[0].head_commit_sha }, versions, discussions: [], draftNotes: [] }
+      : request.action === 'mr-commits' ? [zenCommit]
+      : request.action === 'commit-diff' ? { commitId: request.payload.sha, diffs: commitFiles.map(file => ({ ...file })) }
+      : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa', match: 'exact', stale: false }] }
+      : request.action === 'open-preview' ? { url: request.payload.url }
+      : request.action === 'comment' ? (submittedComments.push(request.payload), { id: 99 })
+      : {};
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(result) });
+  });
+  await context.route('https://preview.example/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Review preview</title>' }));
+  await page.goto(`${baseUrl}/?mr=${encodeURIComponent(mrUrl)}`);
+  try {
+    await page.locator('.file-row').first().waitFor({ timeout: 20_000 });
+    await page.locator('diffs-container').waitFor();
+  } catch {
+    throw new Error(`MR review did not load. ${serverLogs.slice(-10).join('')}`);
+  }
+
+  await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).uncheck();
+  await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
+  const progressBefore = await page.locator('.topbar .progress-label').innerText();
+  await page.evaluate(() => { window.__zenDiff = document.querySelector('diffs-container'); });
+  const pathBefore = await page.locator('.path-label strong').innerText();
+  await page.locator('#review-comment').fill('Revision draft stays with its file');
+  await page.locator('diffs-container').locator('[data-line]').last().click();
+  await page.getByText('Comment on selected diff line', { exact: false }).waitFor();
+  const revisionHistoryTab = page.getByRole('tab', { name: /History/ });
+  await revisionHistoryTab.click();
+  const selectedRevision = await page.locator('.history-row.selected .history-sha').innerText();
+  await page.getByRole('tab', { name: /Files/ }).click();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await page.locator('iframe[title="Merge request preview"]').waitFor();
+  await page.getByRole('button', { name: 'Unified', exact: true }).click();
+
+  const callsBeforeZen = [...calls];
+  await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
+  await page.locator('.review-layout.zen-mode').waitFor();
+  await page.waitForTimeout(320);
+  assert.equal(await page.locator('diffs-container').evaluate(element => element === window.__zenDiff), true, 'entering Zen does not remount the existing diff renderer');
+  assert.deepEqual(calls, callsBeforeZen, 'entering Zen performs no API request or duplicate review polling');
+  assert.equal(await page.locator('.preview-pane iframe').getAttribute('src'), 'https://preview.example/app', 'an open preview survives the mode transition');
+  await page.getByRole('button', { name: 'Close preview' }).click();
+  await page.locator('.preview-pane').waitFor({ state: 'detached' });
+  const fullWidth = await page.locator('.review-main').evaluate(element => ({ left: element.getBoundingClientRect().left, width: element.getBoundingClientRect().width, viewport: window.innerWidth }));
+  assert.ok(fullWidth.left <= 1 && fullWidth.width >= fullWidth.viewport - 1, 'the central review expands across the available viewport');
+  assert.equal(await page.locator('.file-sidebar').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'the Files panel is fully hidden while idle');
+  assert.equal(await page.locator('#zen-history-panel').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'History is fully hidden while idle');
+  assert.equal(await page.locator('.comment-panel').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'Activity and comments are fully hidden while idle');
+  assert.equal(await page.locator('.zen-edge').count(), 4, 'four accessible edge handles remain available');
+  assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'review progress stays unchanged');
+  assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the selected file stays unchanged');
+
+  const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
+  if (screenshotDir) {
+    await mkdir(screenshotDir, { recursive: true });
+    await page.screenshot({ path: join(screenshotDir, 'desktop-zen-idle.png') });
+  }
+
+  const filesHandle = page.locator('#zen-edge-files');
+  const filesHandleBox = await filesHandle.boundingBox();
+  await page.mouse.move(filesHandleBox.x + filesHandleBox.width / 2, filesHandleBox.y + filesHandleBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.file-sidebar')).visibility === 'visible');
+  await page.waitForTimeout(260);
+  await page.getByRole('checkbox', { name: 'Show all files' }).check();
+  const filesPanelBox = await page.locator('.file-sidebar').boundingBox();
+  await page.mouse.move(filesPanelBox.x + filesPanelBox.width - 24, filesPanelBox.y + 120);
+  await page.waitForTimeout(180);
+  assert.equal(await page.locator('.file-sidebar').evaluate(element => getComputedStyle(element).visibility), 'visible', 'crossing from a handle into its overlay keeps the panel open');
+  await page.locator('.file-row').nth(1).click();
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/b.ts', 'the Files panel updates the shared central review');
+  await page.locator('.file-row').first().click();
+  assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the Files panel can return to the original review file');
+  await page.getByRole('checkbox', { name: 'Show all files' }).uncheck();
+  await page.locator('diffs-container').locator('[data-line]').last().click();
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.mouse.move(720, 430);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.file-sidebar')).visibility === 'hidden');
+
+  const controlsHandle = page.locator('#zen-edge-controls');
+  await controlsHandle.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-controls-panel')).visibility === 'visible');
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Close Controls panel', 'keyboard opening moves focus into the panel');
+  assert.equal(await page.locator('#zen-controls-panel [aria-label="Diff layout"] button').nth(1).getAttribute('aria-pressed'), 'true', 'layout choice is retained in the floating controls');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-controls-panel')).visibility === 'hidden');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'zen-edge-controls', 'Escape returns focus to the handle');
+  const historyHandle = page.locator('#zen-edge-history');
+  const historyHandleBox = await historyHandle.boundingBox();
+  await page.mouse.move(historyHandleBox.x + historyHandleBox.width / 2, historyHandleBox.y + historyHandleBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  assert.ok(await page.locator('.zen-revision-row.selected').count(), 'Revisions indicates the selected push version');
+  await page.waitForTimeout(300);
+  if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'desktop-zen-revisions.png') });
+  await page.getByRole('tab', { name: 'Commits' }).click();
+  await page.locator('.zen-commit-row').first().waitFor();
+  await page.waitForTimeout(300);
+  assert.ok(calls.includes('mr-commits'), 'Commits loads GitLab MR commit data');
+  await page.locator('.zen-commit-row').first().click();
+  await page.locator('.zen-history-heading').getByText('Inspecting commit', { exact: false }).waitFor();
+  await page.locator('diffs-container').waitFor();
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/commit.ts', 'selecting a commit loads its own GitLab diff');
+  assert.ok((await page.locator('.commit-inspection-banner').innerText()).includes('Push version'), 'the UI distinguishes commit inspection from push-version selection');
+  assert.equal(await page.locator('.file-heading .review-toggle').isDisabled(), true, 'commit inspection cannot mark a revision file reviewed');
+  assert.equal(calls.filter(action => action === 'version-diff').length, 0, 'commit inspection does not navigate or fetch a push revision');
+
+  const activityHandle = page.locator('#zen-edge-activity');
+  const activityBox = await activityHandle.boundingBox();
+  await page.mouse.move(activityBox.x + activityBox.width / 2, activityBox.y + activityBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.comment-panel')).visibility === 'visible');
+  await page.locator('diffs-container').locator('[data-line]').last().click();
+  assert.match(await page.locator('.comment-form > label').innerText(), /MR-level comment/, 'commit line selection is never labeled as a safe inline position');
+  await page.locator('#review-comment').fill('A commit inspection comment');
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#review-comment')?.value === '');
+  assert.equal(submittedComments.at(-1).position, undefined, 'commit inspection posts no guessed diff coordinates');
+
+  const restoreBeforePushHandle = page.locator('#zen-edge-history');
+  const restoreBeforePushBox = await restoreBeforePushHandle.boundingBox();
+  await page.mouse.move(restoreBeforePushBox.x + restoreBeforePushBox.width / 2, restoreBeforePushBox.y + restoreBeforePushBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Revisions' }).click();
+  const activityBeforePushHandle = page.locator('#zen-edge-activity');
+  const activityBeforePushBox = await activityBeforePushHandle.boundingBox();
+  await page.mouse.move(activityBeforePushBox.x + activityBeforePushBox.width / 2, activityBeforePushBox.y + activityBeforePushBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.comment-panel')).visibility === 'visible');
+  assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'returning to Revisions preserves the selected review file');
+  assert.equal(await page.locator('#review-comment').inputValue(), 'Revision draft stays with its file', 'returning to Revisions restores its file-specific draft');
+  assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/, 'returning to Revisions preserves its verified line selection');
+  const commitsAgainHandle = page.locator('#zen-edge-history');
+  const commitsAgainBox = await commitsAgainHandle.boundingBox();
+  await page.mouse.move(commitsAgainBox.x + commitsAgainBox.width / 2, commitsAgainBox.y + commitsAgainBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Commits' }).click();
+  await page.locator('.zen-commit-row').first().click();
+  await page.locator('.commit-inspection-banner').waitFor();
+
+  versions = [push(3, 'head-three'), ...versions];
+  const beforeRefresh = calls.filter(action => action === 'refresh').length;
+  await page.locator('#zen-edge-controls').focus();
+  await page.keyboard.press('Enter');
+  const refreshButton = page.getByRole('button', { name: 'Refresh merge request' });
+  await refreshButton.click();
+  for (let attempt = 0; attempt < 100 && calls.filter(action => action === 'refresh').length === beforeRefresh; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(calls.filter(action => action === 'refresh').length, beforeRefresh + 1, 'Zen refresh uses the existing review poll once');
+  assert.equal(await page.locator('.path-label strong').innerText(), 'src/commit.ts', 'a new push does not interrupt commit inspection');
+  assert.match(await page.locator('.commit-inspection-banner').innerText(), /Push version 2 remains selected/, 'the prior push selection remains explicit during commit inspection');
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Refresh merge request', 'new-push notification does not steal focus');
+
+  const currentHistoryHandle = page.locator('#zen-edge-history');
+  const currentHistoryBox = await currentHistoryHandle.boundingBox();
+  await page.mouse.move(currentHistoryBox.x + currentHistoryBox.width / 2, currentHistoryBox.y + currentHistoryBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Revisions' }).click();
+  assert.equal(await page.locator('.zen-revision-row').count(), 3, 'the refreshed revision list includes a new push');
+  assert.equal(await page.locator('.commit-inspection-banner').count(), 0, 'Revisions returns to the existing review without changing its selection');
+  assert.equal(await page.locator('.zen-revision-row[aria-current="page"] .history-sha').innerText(), selectedRevision, 'the selected push version is restored after commit inspection');
+  assert.match(await page.locator('.zen-revision-row').first().innerText(), /New/, 'new push is visible without selecting it');
+  assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the previously selected revision file is restored');
+  assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'per-version progress is restored');
+  const restoreActivityHandle = page.locator('#zen-edge-activity');
+  const restoreActivityBox = await restoreActivityHandle.boundingBox();
+  await page.mouse.move(restoreActivityBox.x + restoreActivityBox.width / 2, restoreActivityBox.y + restoreActivityBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.comment-panel')).visibility === 'visible');
+  assert.equal(await page.locator('#review-comment').inputValue(), 'Revision draft stays with its file', 'the revision comment draft is restored');
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add an MR-level comment/, 'a new push invalidates the old line anchor and leaves a safe MR-level comment');
+
+  await page.evaluate(() => { window.__zenDiff = document.querySelector('diffs-container'); });
+  await page.locator('#zen-edge-controls').focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('button', { name: 'Exit Zen Mode' }).click();
+  await page.locator('.review-layout:not(.zen-mode)').waitFor();
+  assert.equal(await page.locator('diffs-container').evaluate(element => element === window.__zenDiff), true, 'exiting Zen does not remount the current diff');
+  assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'normal mode resumes with the same selected file');
+  assert.deepEqual(errors, [], 'the browser reports no page exceptions');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.getByRole('button', { name: 'Enter Zen Mode' }).isVisible(), true, 'Zen mode remains available in the mobile header');
+  assert.equal(await page.getByRole('button', { name: '↻ Refresh' }).isVisible(), true, 'the existing mobile refresh action remains visible');
+  await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
+  await page.locator('.review-layout.zen-mode').waitFor();
+  const touchHistory = page.locator('#zen-edge-history');
+  const touchHistoryBox = await touchHistory.boundingBox();
+  assert.ok(touchHistoryBox.width >= 44 && touchHistoryBox.height >= 44, 'the tiny visible nudge has a touch-sized hit target');
+  await page.touchscreen.tap(touchHistoryBox.x + touchHistoryBox.width / 2, touchHistoryBox.y + touchHistoryBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Commits' }).click();
+  await page.locator('.zen-commit-row').first().waitFor();
+  if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'mobile-zen-commits.png') });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const activityTouch = page.locator('#zen-edge-activity');
+  const activityTouchBox = await activityTouch.boundingBox();
+  await page.touchscreen.tap(activityTouchBox.x + activityTouchBox.width / 2, activityTouchBox.y + activityTouchBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.comment-panel')).visibility === 'visible');
+  const reducedTransition = await page.locator('.comment-panel').evaluate(element => getComputedStyle(element).transitionDuration.split(',').map(value => value.trim()));
+  assert.ok(reducedTransition.every(value => value === '0s' || value === '0ms'), 'reduced motion removes the panel transition');
+  assert.equal(await page.getByLabel('Add an MR-level comment').isVisible(), true, 'touch can open the real activity composer without hover');
+
+  emptyReview = true;
+  await page.goto(`${baseUrl}/?mr=${encodeURIComponent(mrUrl)}`);
+  const zenButton = page.getByRole('button', { name: 'Enter Zen Mode' });
+  await zenButton.waitFor();
+  await zenButton.click();
+  await page.locator('.review-layout.zen-mode').waitFor();
+  assert.deepEqual(errors, [], 'Zen controls render safely when the MR has no changed files');
+});
