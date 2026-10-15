@@ -6,17 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
 const root = new URL('../', import.meta.url).pathname;
-const patch = (file, oldValue, newValue) => `diff --git a/${file} b/${file}\nindex 1111111..2222222 100644\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n-${oldValue}\n+${newValue}\n`;
-const mr = { id: 77, iid: 7, title: 'Keep review state stable', description: 'A mocked review.\n\n![GitLab upload](https://gitlab.example/uploads/screenshot.png)\n\n![External image](https://attacker.invalid/track.png)', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'feature', target_branch: 'main', sha: 'head1', source_project_id: 2, target_project_id: 2, author: { username: 'reviewer', name: 'Reviewer' } };
+const mr = { id: 77, iid: 7, title: 'Keep review state stable', description: 'A mocked review.\n\n![GitLab upload](https://gitlab.example/uploads/screenshot.png)\n\n![External image](https://attacker.invalid/track.png)', state: 'opened', web_url: 'https://gitlab.example/group/app/-/merge_requests/7', source_branch: 'feature', target_branch: 'main', sha: 'head1', diff_refs: { base_sha: 'base1', head_sha: 'head1', start_sha: 'base1' }, source_project_id: 2, target_project_id: 2, author: { username: 'reviewer', name: 'Reviewer' } };
 let currentMrSha = 'head1';
+const currentMr = () => ({ ...mr, sha: currentMrSha, diff_refs: { base_sha: `base-${currentMrSha}`, head_sha: currentMrSha, start_sha: `base-${currentMrSha}` } });
 let includeFullFile = false;
 let remoteDraftText = 'Remote GitLab draft';
 let ownerMembershipKnown = true;
 const data = () => ({
-  mr: { ...mr, sha: currentMrSha }, user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2, path: 'group/app' },
+  mr: currentMr(), user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2, path: 'group/app' },
   diffs: [
     { old_path: 'doc/releases/19/release.md', new_path: 'doc/releases/19/release.md', diff: '@@ -0,0 +1 @@\n+const newA = 2;\n', new_file: true, deleted_file: false, renamed_file: false, identity: 'blob-a' },
-    { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: patch('src/b.ts', 'const oldB = 1;', 'const newB = 2;'), new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
+    { old_path: 'src/b.ts', new_path: 'src/b.ts', diff: '@@ -1 +1 @@\n-const oldB = 1;\n+const newB = 2;\n', new_file: false, deleted_file: false, renamed_file: false, identity: 'blob-b' },
     ...(includeFullFile ? [{ old_path: 'src/full.ts', new_path: 'src/full.ts', diff: '', old_id: 'old-full', new_id: 'new-full', new_file: false, deleted_file: false, renamed_file: false, too_large: true, identity: 'blob-full' }] : []),
   ], discussions: [{ id: 'thread-1', resolved: false, notes: [{ id: 41, body: 'Mock discussion', author: { id: 6, name: 'Reviewer' }, award_emoji: [] }] }], draftNotes: [{ id: 31, note: remoteDraftText, position: null }, { id: 32, note: 'Delete this draft', position: null }],
   codeowners: [{ pattern: 'releases/**/*.md', owners: ['reviewer', 'other'] }, { pattern: 'src/b.ts', owners: ['other'] }], ownerStatus: { reviewer: true, other: null },
@@ -85,6 +85,7 @@ test('review screen preserves preview navigation and local drafts while reviewin
   let publishCalls = 0;
   let delayFirstRefresh = true;
   let deleteCalls = 0;
+const submittedComments = [];
   let failDraftDeleteOnce = true;
   let holdIdentityHydration = false;
   let releaseIdentityHydration = () => {};
@@ -120,11 +121,13 @@ test('review screen preserves preview navigation and local drafts while reviewin
     if (request.action === 'edit-draft-note') remoteDraftText = request.payload.note;
     const result = request.action === 'bootstrap' ? { ...data(), diffs: data().diffs.map(file => ({ ...file, identity: file.deleted_file ? 'deleted' : null })), discussions: [], draftNotes: [] }
       : request.action === 'file-identities' ? { identities: Object.fromEntries(data().diffs.filter(file => request.payload.paths.includes(file.new_path)).map(file => [file.new_path, file.identity])) }
-      : request.action === 'refresh' ? { mr: { ...mr, sha: currentMrSha }, discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
+      : request.action === 'refresh' ? { mr: currentMr(), discussions: data().discussions, draftNotes: publishedDrafts ? [] : data().draftNotes.filter(note => !deletedDrafts.has(note.id)) }
       : request.action === 'verify-owners' ? { codeowners: data().codeowners, ownerStatus: ownerMembershipKnown ? { reviewer: true, other: null } : { reviewer: null, other: null } }
       : request.action === 'preview' ? { previews: [{ url: 'https://preview.example/app', environment: 'qa-feature', match: 'exact', stale: false }] }
-      : request.action === 'comment' ? { id: 1 }
-      : request.action === 'files' ? { content: request.payload.ref === 'head-full' ? 'const value = 2;' : 'const value = 1;' }
+      : request.action === 'comment' ? (submittedComments.push(request.payload), { id: 1 })
+      : request.action === 'files' ? { content: request.payload.ref === 'head-full'
+        ? Array.from({ length: 1_500 }, (_, index) => `export const full${index} = ${index === 749 ? 9999 : index};`).join('\n')
+        : Array.from({ length: 1_500 }, (_, index) => `export const full${index} = ${index};`).join('\n') }
       : request.action === 'delete-draft-note' || request.action === 'edit-draft-note' ? {}
       : request.action === 'publish-drafts' ? (publishCalls++, await new Promise(resolve => setTimeout(resolve, 150)), publishedDrafts = true, {})
       : request.action === 'open-preview' ? { url: request.payload.url }
@@ -241,11 +244,24 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await showAll.check();
   await page.locator('.file-row').nth(1).click();
   assert.equal(await page.locator('.reviewed-mark').count(), 0, 'navigating must not mark a file reviewed');
+  await page.waitForFunction(() => document.querySelector('.diff-shell')?.querySelector('diffs-container')?.shadowRoot?.querySelector('[data-line]'));
+  assert.match(await page.locator('diffs-container').evaluate(el => el.shadowRoot?.textContent || ''), /const newB = 2;/, 'GitLab hunk-only modified diffs render without a diff header');
+  await page.locator('diffs-container').locator('[data-line]').first().click();
+  await page.locator('#review-comment').fill('Comment draft survives a diff update');
+  assert.match(await page.locator('.comment-form > label').innerText(), /Comment on selected diff line/);
+  currentMrSha = 'head2';
+  await page.getByRole('button', { name: '↻ Refresh' }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('.top-actions button')].some(button => button.textContent?.trim() === '↻ Refresh' && !button.disabled));
+  assert.match(await page.locator('.comment-form > label').innerText(), /Add a file comment/, `a changed diff clears the stale line selection; actions: ${apiCalls.join(',')}`);
+  assert.equal(await page.locator('#review-comment').inputValue(), 'Comment draft survives a diff update', 'clearing a stale line keeps the unsent text');
+  await page.getByRole('checkbox', { name: 'Save as draft note' }).uncheck();
+  await page.getByRole('button', { name: 'Post comment' }).click();
+  await page.waitForFunction(() => document.body.innerText.includes('Comment posted'));
+  assert.equal(submittedComments.at(-1).position, undefined, 'a refreshed comment cannot submit old diff references');
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
   const reviewedSegmentOpacity = await page.locator('.progress-segment').evaluateAll(segments => segments.map(segment => getComputedStyle(segment).opacity));
   assert.deepEqual(reviewedSegmentOpacity.sort(), ['0.5', '1'], 'reviewed segments are bright while unreviewed segments stay dimmed');
   assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/);
-  currentMrSha = 'head2';
   await page.getByRole('button', { name: '↻ Refresh' }).click();
   assert.match(await page.locator('.progress-label').innerText(), /^1\/2 · \d+%$/, 'review status survives MR updates when the file identity is unchanged');
   await page.reload();
@@ -334,7 +350,10 @@ test('review screen preserves preview navigation and local drafts while reviewin
   await page.locator('.file-row').nth(2).click();
   await page.getByRole('button', { name: 'Load full file' }).click();
   await page.waitForFunction(() => !document.querySelector('.diff-warning'));
-  assert.equal(await page.locator('diffs-container').count(), 1, 'a successfully loaded full file replaces the collapsed-file prompt with its diff');
+  await page.waitForFunction(() => document.querySelector('.diff-shell')?.querySelector('diffs-container')?.shadowRoot?.querySelector('[data-line]'));
+  assert.match(await page.locator('diffs-container').evaluate(el => el.shadowRoot?.textContent || ''), /9999/, 'a collapsed 1,500-line file renders its changed lines after loading full contents');
+  assert.equal(await page.locator('diff-warning').count(), 0, 'a successfully loaded full file replaces the collapsed-file prompt with its diff');
+  assert.equal(await page.getByRole('button', { name: 'Load full file' }).count(), 0, 'loading full file removes the now-unnecessary action');
   await page.evaluate(() => {
     const key = 'review-master:v3:https://gitlab.example:5:2:7';
     const state = JSON.parse(localStorage.getItem(key) || '{}');

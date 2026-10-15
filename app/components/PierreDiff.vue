@@ -104,7 +104,7 @@ function render() {
     return;
   }
   const shouldVirtualize = contentLines > 2_000;
-  const nextViewKind = shouldVirtualize && !props.continuous && !props.fullFiles ? 'code' : 'simple';
+  const nextViewKind = shouldVirtualize && !props.continuous ? 'code' : 'simple';
   target.value.classList.toggle('code-view', nextViewKind === 'code');
   if (viewKind !== nextViewKind) {
     view?.cleanUp();
