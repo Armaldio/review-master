@@ -178,6 +178,18 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.ok(standardScrollState.diffTop > 0, `wheel input scrolls the diffs-container: ${JSON.stringify(standardScrollState)}`);
   assert.equal(standardScrollState.wrapperTop, 0, `the outer diff wrapper stays in place: ${JSON.stringify(standardScrollState)}`);
   assert.equal(standardScrollState.pageTop, 0, `the document stays in place: ${JSON.stringify(standardScrollState)}`);
+  const stickyHeaderState = await page.locator('diffs-container').evaluate(container => {
+    const header = container.shadowRoot?.querySelector('[data-diffs-header]');
+    return {
+      position: header ? getComputedStyle(header).position : null,
+      top: header?.getBoundingClientRect().top,
+      containerTop: container.getBoundingClientRect().top,
+      text: header?.textContent?.trim() || '',
+    };
+  });
+  assert.equal(stickyHeaderState.position, 'sticky', `the file header uses sticky positioning: ${JSON.stringify(stickyHeaderState)}`);
+  assert.ok(Math.abs((stickyHeaderState.top ?? Infinity) - stickyHeaderState.containerTop) <= 1, `the file header remains at the top of its scrolling diff: ${JSON.stringify(stickyHeaderState)}`);
+  assert.match(stickyHeaderState.text, /src\/a\.ts/, 'the file path remains visible while scrolling');
   if (process.env.RMR9_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'desktop-zen-diffs-container-scroll.png') });
   await page.setViewportSize({ width: 650, height: 892 });
   await page.locator('diffs-container').evaluate(container => container.scrollTo({ top: container.scrollHeight }));

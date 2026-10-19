@@ -57,7 +57,7 @@ function render() {
   previousMode = props.mode;
   previousWrap = props.wrap;
   const options: FileDiffOptions<any, any> = {
-    theme: { dark: 'pierre-dark', light: 'pierre-light' }, diffStyle: props.mode, overflow: props.wrap ? 'wrap' : 'scroll',
+    theme: { dark: 'pierre-dark', light: 'pierre-light' }, diffStyle: props.mode, overflow: props.wrap ? 'wrap' : 'scroll', stickyHeader: true,
     enableLineSelection: true,
     onLineClick: ({ lineNumber, annotationSide }: { lineNumber: number; annotationSide: AnnotationSide }) => emit('lineSelected', { lineNumber, side: annotationSide === 'additions' ? 'new' : 'old' }),
     onLineSelectionEnd: (range: SelectedLineRange | null) => { if (range) emit('lineRange', range); },
@@ -105,6 +105,7 @@ function render() {
   }
   const shouldVirtualize = contentLines > 2_000;
   const nextViewKind = shouldVirtualize && !props.continuous ? 'code' : 'simple';
+  const codeViewOptions = { ...options, stickyHeaders: true } as CodeViewOptions<any, any>;
   target.value.classList.toggle('code-view', nextViewKind === 'code');
   if (viewKind !== nextViewKind) {
     view?.cleanUp();
@@ -117,14 +118,14 @@ function render() {
   }
   if (viewKind === 'code') {
     if (!view) {
-      const codeView = new CodeView(options as CodeViewOptions<any, any>, getWorkerPool(), true);
+      const codeView = new CodeView(codeViewOptions, getWorkerPool(), true);
       codeView.setup(target.value);
       codeView.setItems([{ id: props.path, type: 'diff', fileDiff: metadata, version: ++codeViewItemVersion }]);
       view = codeView;
     } else {
       const codeView = view as CodeView<any, any>;
       if (metadataChanged) codeView.setItems([{ id: props.path, type: 'diff', fileDiff: metadata, version: ++codeViewItemVersion }]);
-      if (optionsChanged) codeView.setOptions(options as CodeViewOptions<any, any>);
+      if (optionsChanged) codeView.setOptions(codeViewOptions);
     }
     notifyReady();
     return;
