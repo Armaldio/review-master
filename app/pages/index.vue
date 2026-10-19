@@ -672,7 +672,7 @@ watch(displayedFiles, files => {
         <div v-else-if="commitInspection && !sourceFiles.length" class="empty-state">GitLab returned no file changes for this commit.</div>
         <template v-else-if="activeFile">
           <div v-if="commitInspection" class="commit-inspection-banner" role="status"><strong>Inspecting {{ commitInspection.commit.short_id || commitInspection.commit.id.slice(0, 8) }}</strong><span>{{ commitInspection.commit.title }} · Push version {{ app.selectedVersionId.value }} remains selected</span><span>Comments are posted at merge request level.</span></div>
-          <div class="file-toolbar" :aria-hidden="zenMode" :inert="zenMode">
+          <div class="file-toolbar">
             <div class="file-heading">
               <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="commitInspection" class="commit-inspection-label">Commit inspection · push version {{ app.selectedVersionId.value }} remains selected</span><span v-else-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
               <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="Boolean(commitInspection) || !activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>

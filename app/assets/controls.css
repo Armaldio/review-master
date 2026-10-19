@@ -191,12 +191,23 @@
 }
 
 .review-layout.zen-mode .review-main > .file-toolbar {
-  max-height: 0;
-  padding-block: 0;
-  border: 0;
-  opacity: 0;
-  transform: translateY(-10px);
-  pointer-events: none;
+  max-height: 52px;
+  padding: 4px 12px;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.review-layout.zen-mode .review-main > .file-toolbar .file-heading {
+  flex: 1 1 auto;
+  width: auto;
+  align-self: stretch;
+  justify-content: flex-end;
+}
+
+.review-layout.zen-mode .review-main > .file-toolbar .path-label,
+.review-layout.zen-mode .review-main > .file-toolbar .file-actions {
+  display: none;
 }
 
 .review-layout.zen-mode .preview-pane {
