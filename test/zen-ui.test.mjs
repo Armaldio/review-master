@@ -203,6 +203,18 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
     await page.screenshot({ path: join(screenshotDir, 'desktop-zen-idle.png') });
   }
 
+  await page.setViewportSize({ width: 650, height: 892 });
+  const compactSafeArea = await page.evaluate(() => {
+    const diff = document.querySelector('.diff-scroll').getBoundingClientRect();
+    const controls = document.querySelector('#zen-edge-controls').getBoundingClientRect();
+    const activity = document.querySelector('#zen-edge-activity').getBoundingClientRect();
+    return { diffTop: diff.top, diffBottom: diff.bottom, controlsBottom: controls.bottom, activityTop: activity.top };
+  });
+  assert.ok(compactSafeArea.diffTop >= compactSafeArea.controlsBottom, `the top edge handle does not cover the diff: ${JSON.stringify(compactSafeArea)}`);
+  assert.ok(compactSafeArea.diffBottom <= compactSafeArea.activityTop, `the bottom edge handle does not cover the diff: ${JSON.stringify(compactSafeArea)}`);
+  if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'desktop-zen-compact-safe-area.png') });
+  await page.setViewportSize({ width: 1440, height: 900 });
+
   const filesHandle = page.locator('#zen-edge-files');
   const filesHandleBox = await filesHandle.boundingBox();
   await page.mouse.move(filesHandleBox.x + filesHandleBox.width / 2, filesHandleBox.y + filesHandleBox.height / 2);

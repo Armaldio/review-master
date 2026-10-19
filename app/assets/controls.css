@@ -149,6 +149,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  padding-block: 18px;
 }
 
 .review-layout.zen-mode .diff-scroll {
@@ -494,6 +495,10 @@
 
   .zen-controls-panel { top: 64px; max-height: calc(100dvh - 128px); }
   .zen-control-row { gap: 4px; padding: 7px; }
+}
+
+@media (max-width: 680px) and (pointer: coarse) {
+  .review-layout.zen-mode .review-main { padding-block: 48px; }
   .zen-edge { width: 48px; height: 64px; }
   .zen-edge-controls,.zen-edge-activity { width: 64px; height: 48px; }
   .zen-edge-controls::after,.zen-edge-activity::after { width: 40px; }
