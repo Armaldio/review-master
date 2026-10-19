@@ -17,6 +17,8 @@ const reviewFiles = [
 const push = (id, sha) => ({ id, created_at: `2026-10-${String(id + 13).padStart(2, '0')}T12:00:00Z`, head_commit_sha: sha, base_commit_sha: `base-${sha}`, start_commit_sha: `base-${sha}`, state: 'collected' });
 const zenCommit = { id: 'c0ffee1234567890c0ffee1234567890c0ffee12', short_id: 'c0ffee12', title: 'Correct the commit-specific behavior', author_name: 'Reviewer', committed_date: '2026-10-15T12:00:00Z' };
 const commitFiles = [{ old_path: 'src/commit.ts', new_path: 'src/commit.ts', diff: '@@ -1 +1 @@\n-const value = "old";\n+const value = "commit inspection";\n', new_file: false, deleted_file: false, renamed_file: false, identity: null }];
+let largeDiffMode = false;
+const largeDiff = '@@ -0,0 +1,2200 @@\n' + Array.from({ length: 2200 }, (_, index) => `+export const line${index + 1} = ${index + 1};`).join('\n') + '\n';
 
 async function availablePort() {
   const server = createServer();
@@ -83,7 +85,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
       return {
         mr: { ...mr, sha: version.head_commit_sha, diff_refs: { base_sha: previous?.head_commit_sha || version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: previous?.head_commit_sha || version.start_commit_sha } },
         user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2 },
-        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file })), versions,
+        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file, diff: largeDiffMode && file.new_path === 'src/a.ts' ? largeDiff : file.diff })), versions,
         selectedVersionId: version.id, versionIsInitial: !previous, versionIsLatest: index === 0,
         commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
         commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1] }],
@@ -146,30 +148,54 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'review progress stays unchanged');
   assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the selected file stays unchanged');
 
-  const scrollProbe = await page.evaluate(() => {
-    const editor = document.querySelector('.diff-shell');
-    // CodeView owns this inner scroll container for large diffs.
-    editor.classList.add('code-view');
-    const filler = document.createElement('div');
-    filler.dataset.scrollProbe = 'true';
-    filler.style.height = '1600px';
-    editor.append(filler);
+  largeDiffMode = true;
+  const historyForLargeDiff = page.locator('#zen-edge-history');
+  await historyForLargeDiff.hover();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Revisions' }).click();
+  await page.locator('.zen-revision-row').nth(1).click();
+  await page.locator('.diff-shell.code-view').waitFor({ timeout: 20_000 });
+  await page.waitForFunction(() => {
+    const view = window.__INSTANCE;
+    return view?.workerManager?.getStats().managerState === 'initialized' && view.renderState.firstIndex >= 0;
+  }, null, { timeout: 30_000 });
+  const scrollProbe = await page.locator('.diff-shell.code-view').evaluate(editor => {
     const bounds = editor.getBoundingClientRect();
     return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   });
   await page.mouse.move(scrollProbe.x, scrollProbe.y);
   await page.mouse.wheel(0, 600);
-  await page.waitForFunction(() => document.querySelector('.diff-shell').scrollTop > 0);
+  await page.waitForFunction(() => document.querySelector('.diff-shell.code-view')?.scrollTop > 0);
   const scrollState = await page.evaluate(() => {
-    const editor = document.querySelector('.diff-shell');
-    const documentScroller = document.scrollingElement;
-    const state = { editorTop: editor.scrollTop, editorHeight: editor.clientHeight, editorScrollHeight: editor.scrollHeight, pageTop: documentScroller.scrollTop };
-    editor.querySelector('[data-scroll-probe]')?.remove();
-    editor.classList.remove('code-view');
-    return state;
+    const editor = document.querySelector('.diff-shell.code-view');
+    return {
+      editorTop: editor.scrollTop,
+      editorHeight: editor.clientHeight,
+      editorScrollHeight: editor.scrollHeight,
+      diffScrollTop: document.querySelector('.diff-scroll').scrollTop,
+      layoutTop: document.querySelector('.review-layout').scrollTop,
+      workspaceTop: document.querySelector('.workspace').scrollTop,
+      pageTop: document.scrollingElement.scrollTop,
+    };
   });
-  assert.ok(scrollState.editorScrollHeight > scrollState.editorHeight, 'the CodeView editor has overflow to scroll');
-  assert.ok(scrollState.editorTop > 0 && scrollState.pageTop === 0, `Zen wheel input scrolls the diff without moving the page: ${JSON.stringify(scrollState)}`);
+  assert.ok(scrollState.editorScrollHeight > scrollState.editorHeight, `the actual CodeView editor has overflow: ${JSON.stringify(scrollState)}`);
+  assert.ok(scrollState.editorTop > 0, `wheel input scrolls the actual diff editor: ${JSON.stringify(scrollState)}`);
+  assert.equal(scrollState.diffScrollTop, 0, `the diff wrapper stays in place: ${JSON.stringify(scrollState)}`);
+  assert.equal(scrollState.layoutTop, 0, `the review layout stays in place: ${JSON.stringify(scrollState)}`);
+  assert.equal(scrollState.workspaceTop, 0, `the Zen workspace stays in place: ${JSON.stringify(scrollState)}`);
+  assert.equal(scrollState.pageTop, 0, `the document stays in place: ${JSON.stringify(scrollState)}`);
+  if (process.env.RMR9_SCREENSHOT_DIR) {
+    await mkdir(process.env.RMR9_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'desktop-zen-codeview-scroll.png') });
+  }
+  largeDiffMode = false;
+  await historyForLargeDiff.hover();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.getByRole('tab', { name: 'Revisions' }).click();
+  await page.locator('.zen-revision-row').first().click();
+  await page.locator('diffs-container').waitFor();
+  await page.mouse.move(720, 430);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'hidden');
 
   const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
   if (screenshotDir) {
@@ -213,6 +239,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.ok(await page.locator('.zen-revision-row.selected').count(), 'Revisions indicates the selected push version');
   await page.waitForTimeout(300);
   if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'desktop-zen-revisions.png') });
+  const versionDiffCallsBeforeCommitInspection = calls.filter(action => action === 'version-diff').length;
   await page.getByRole('tab', { name: 'Commits' }).click();
   await page.locator('.zen-commit-row').first().waitFor();
   await page.waitForTimeout(300);
@@ -223,7 +250,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.locator('.path-label strong').innerText(), 'src/commit.ts', 'selecting a commit loads its own GitLab diff');
   assert.ok((await page.locator('.commit-inspection-banner').innerText()).includes('Push version'), 'the UI distinguishes commit inspection from push-version selection');
   assert.equal(await page.locator('.file-heading .review-toggle').isDisabled(), true, 'commit inspection cannot mark a revision file reviewed');
-  assert.equal(calls.filter(action => action === 'version-diff').length, 0, 'commit inspection does not navigate or fetch a push revision');
+  assert.equal(calls.filter(action => action === 'version-diff').length, versionDiffCallsBeforeCommitInspection, 'commit inspection does not navigate or fetch a push revision');
 
   const activityHandle = page.locator('#zen-edge-activity');
   const activityBox = await activityHandle.boundingBox();
