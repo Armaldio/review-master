@@ -90,7 +90,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
         diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file, diff: file.new_path === 'src/a.ts' ? largeDiffMode ? largeDiff : standardDiffMode ? standardLongDiff : file.diff : file.diff })), versions,
         selectedVersionId: version.id, versionIsInitial: !previous, versionIsLatest: index === 0,
         commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
-        commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1] }],
+        commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1, 240] }],
         discussions: [], draftNotes: [], codeowners: [{ pattern: 'src/a.ts', owners: ['reviewer'] }], ownerStatus: { reviewer: true },
       };
     };
@@ -108,6 +108,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(result) });
   });
   await context.route('https://preview.example/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Review preview</title>' }));
+  standardDiffMode = true;
   await page.goto(`${baseUrl}/?mr=${encodeURIComponent(mrUrl)}`);
   try {
     await page.locator('.file-row').first().waitFor({ timeout: 20_000 });
@@ -115,6 +116,79 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   } catch {
     throw new Error(`MR review did not load. ${serverLogs.slice(-10).join('')}`);
   }
+
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.shadowRoot?.textContent?.includes('line240'));
+  const regularDiffScroll = page.locator('diffs-container');
+  const regularDiffProbe = await regularDiffScroll.evaluate(diff => {
+    const bounds = diff.getBoundingClientRect();
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, clientHeight: diff.clientHeight, scrollHeight: diff.scrollHeight };
+  });
+  assert.ok(regularDiffProbe.scrollHeight > regularDiffProbe.clientHeight, `the regular single-file diff owns its overflow: ${JSON.stringify(regularDiffProbe)}`);
+  await page.mouse.move(regularDiffProbe.x, regularDiffProbe.y);
+  await page.mouse.wheel(0, 600);
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.scrollTop > 0);
+  const regularDiffState = await page.evaluate(() => ({
+    diffTop: document.querySelector('diffs-container').scrollTop,
+    wrapperTop: document.querySelector('.diff-scroll').scrollTop,
+    pageTop: document.scrollingElement.scrollTop,
+  }));
+  assert.ok(regularDiffState.diffTop > 0, `wheel input scrolls PierreDiff in regular mode: ${JSON.stringify(regularDiffState)}`);
+  assert.equal(regularDiffState.wrapperTop, 0, `the regular diff wrapper stays in place: ${JSON.stringify(regularDiffState)}`);
+  assert.equal(regularDiffState.pageTop, 0, `the regular page stays in place: ${JSON.stringify(regularDiffState)}`);
+  await regularDiffScroll.evaluate(diff => { diff.scrollTop = diff.scrollHeight; });
+  await page.waitForFunction(() => {
+    const diff = document.querySelector('diffs-container');
+    return diff && diff.scrollTop + diff.clientHeight >= diff.scrollHeight - 1;
+  });
+  const regularHeaderState = await regularDiffScroll.evaluate(diff => {
+    const header = diff.shadowRoot?.querySelector('[data-diffs-header]');
+    return { top: header?.getBoundingClientRect().top, containerTop: diff.getBoundingClientRect().top, text: header?.textContent?.trim() || '' };
+  });
+  assert.ok(Math.abs((regularHeaderState.top ?? Infinity) - regularHeaderState.containerTop) <= 1, `PierreDiff keeps its header visible in regular mode: ${JSON.stringify(regularHeaderState)}`);
+  assert.match(regularHeaderState.text, /src\/a\.ts/);
+  if (process.env.RMR9_SCREENSHOT_DIR) {
+    await mkdir(process.env.RMR9_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'desktop-single-file-diff-scroll.png') });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await regularDiffScroll.evaluate(diff => { diff.scrollTop = 0; });
+  await page.mouse.move(195, 420);
+  await page.mouse.wheel(0, 420);
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.scrollTop > 0);
+  const mobileRegularDiffState = await page.evaluate(() => ({
+    diffTop: document.querySelector('diffs-container').scrollTop,
+    wrapperTop: document.querySelector('.diff-scroll').scrollTop,
+    pageTop: document.scrollingElement.scrollTop,
+  }));
+  assert.ok(mobileRegularDiffState.diffTop > 0, `mobile wheel input scrolls PierreDiff: ${JSON.stringify(mobileRegularDiffState)}`);
+  assert.equal(mobileRegularDiffState.wrapperTop, 0, `the mobile diff wrapper stays in place: ${JSON.stringify(mobileRegularDiffState)}`);
+  assert.equal(mobileRegularDiffState.pageTop, 0, `the mobile page stays in place: ${JSON.stringify(mobileRegularDiffState)}`);
+  await regularDiffScroll.evaluate(diff => { diff.scrollTop = diff.scrollHeight; });
+  await page.waitForFunction(() => {
+    const diff = document.querySelector('diffs-container');
+    return diff && diff.scrollTop + diff.clientHeight >= diff.scrollHeight - 1;
+  });
+  if (process.env.RMR9_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'mobile-single-file-diff-scroll.png') });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await regularDiffScroll.evaluate(diff => { diff.scrollTop = 0; });
+  await page.locator('.display-menu summary').click();
+  await page.getByRole('checkbox', { name: 'Continuous files' }).check();
+  await page.waitForFunction(() => {
+    const scroller = document.querySelector('.diff-scroll');
+    return scroller?.classList.contains('continuous-scroll') && scroller.scrollHeight > scroller.clientHeight;
+  });
+  const continuousScrollProbe = await page.locator('.diff-scroll').evaluate(scroller => {
+    const bounds = scroller.getBoundingClientRect();
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  });
+  await page.mouse.move(continuousScrollProbe.x, continuousScrollProbe.y);
+  await page.mouse.wheel(0, 420);
+  await page.waitForFunction(() => document.querySelector('.diff-scroll')?.scrollTop > 0);
+  assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0, 'continuous files keeps scrolling in its list');
+  standardDiffMode = false;
+  await page.reload();
+  await page.locator('.file-row').first().waitFor();
+  await page.locator('diffs-container').waitFor();
 
   await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).uncheck();
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();

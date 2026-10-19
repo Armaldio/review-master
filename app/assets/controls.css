@@ -152,7 +152,7 @@
   padding-block: 18px;
 }
 
-.review-layout.zen-mode .diff-scroll {
+.review-layout .diff-scroll:not(.continuous-scroll) {
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -160,28 +160,24 @@
   overscroll-behavior: contain;
 }
 
-.review-layout.zen-mode .diff-scroll.continuous-scroll {
-  overflow: auto;
-}
-
-.review-layout.zen-mode .diff-scroll > .diff-shell {
+.review-layout .diff-scroll:not(.continuous-scroll) > .diff-shell {
   flex: 1;
   min-height: 0;
 }
 
-.review-layout.zen-mode .diff-scroll > .raw-diff {
+.review-layout .diff-scroll:not(.continuous-scroll) > .raw-diff {
   flex: 1;
   min-height: 0;
   overflow: auto;
 }
 
-.review-layout.zen-mode .diff-scroll:not(.continuous-scroll) > .diff-shell:not(.code-view) {
+.review-layout .diff-scroll:not(.continuous-scroll) > .diff-shell:not(.code-view) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.review-layout.zen-mode .diff-scroll:not(.continuous-scroll) > .diff-shell:not(.code-view) > diffs-container {
+.review-layout .diff-scroll:not(.continuous-scroll) > .diff-shell:not(.code-view) > diffs-container {
   flex: 1;
   min-height: 0;
   overflow: auto;
