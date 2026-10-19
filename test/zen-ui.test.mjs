@@ -18,7 +18,9 @@ const push = (id, sha) => ({ id, created_at: `2026-10-${String(id + 13).padStart
 const zenCommit = { id: 'c0ffee1234567890c0ffee1234567890c0ffee12', short_id: 'c0ffee12', title: 'Correct the commit-specific behavior', author_name: 'Reviewer', committed_date: '2026-10-15T12:00:00Z' };
 const commitFiles = [{ old_path: 'src/commit.ts', new_path: 'src/commit.ts', diff: '@@ -1 +1 @@\n-const value = "old";\n+const value = "commit inspection";\n', new_file: false, deleted_file: false, renamed_file: false, identity: null }];
 let largeDiffMode = false;
+let standardDiffMode = false;
 const largeDiff = '@@ -0,0 +1,2200 @@\n' + Array.from({ length: 2200 }, (_, index) => `+export const line${index + 1} = ${index + 1};`).join('\n') + '\n';
+const standardLongDiff = '@@ -0,0 +1,240 @@\n' + Array.from({ length: 240 }, (_, index) => `+export const line${index + 1} = ${index + 1};`).join('\n') + '\n';
 
 async function availablePort() {
   const server = createServer();
@@ -85,7 +87,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
       return {
         mr: { ...mr, sha: version.head_commit_sha, diff_refs: { base_sha: previous?.head_commit_sha || version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: previous?.head_commit_sha || version.start_commit_sha } },
         user: { id: 5, username: 'reviewer', name: 'Reviewer' }, project: { id: 2 },
-        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file, diff: largeDiffMode && file.new_path === 'src/a.ts' ? largeDiff : file.diff })), versions,
+        diffs: emptyReview ? [] : reviewFiles.map(file => ({ ...file, diff: file.new_path === 'src/a.ts' ? largeDiffMode ? largeDiff : standardDiffMode ? standardLongDiff : file.diff : file.diff })), versions,
         selectedVersionId: version.id, versionIsInitial: !previous, versionIsLatest: index === 0,
         commentRefs: { base_sha: version.base_commit_sha, head_sha: version.head_commit_sha, start_sha: version.start_commit_sha },
         commentableLines: [{ old_path: 'src/a.ts', new_path: 'src/a.ts', old_lines: [], new_lines: [1] }],
@@ -147,6 +149,58 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.locator('.zen-edge').count(), 4, 'four accessible edge handles remain available');
   assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'review progress stays unchanged');
   assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the selected file stays unchanged');
+  standardDiffMode = true;
+  const standardHistoryHandle = page.locator('#zen-edge-history');
+  const standardHistoryBox = await standardHistoryHandle.boundingBox();
+  await page.mouse.move(standardHistoryBox.x + standardHistoryBox.width / 2, standardHistoryBox.y + standardHistoryBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  const earlierRevision = page.locator('.zen-revision-row').nth(1);
+  const earlierRevisionSha = await earlierRevision.locator('.history-sha').innerText();
+  await earlierRevision.click();
+  await page.waitForFunction(sha => document.querySelector('.zen-revision-row.selected .history-sha')?.textContent === sha, earlierRevisionSha);
+  await page.waitForFunction(() => {
+    const diff = document.querySelector('diffs-container');
+    return diff && diff.scrollHeight > diff.clientHeight;
+  });
+  const standardScrollProbe = await page.locator('diffs-container').evaluate(container => {
+    const bounds = container.getBoundingClientRect();
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2, height: container.clientHeight, scrollHeight: container.scrollHeight };
+  });
+  assert.ok(standardScrollProbe.scrollHeight > standardScrollProbe.height, `the standard diff container has vertical overflow: ${JSON.stringify(standardScrollProbe)}`);
+  await page.mouse.move(standardScrollProbe.x, standardScrollProbe.y);
+  await page.mouse.wheel(0, 600);
+  await page.waitForFunction(() => document.querySelector('diffs-container')?.scrollTop > 0);
+  const standardScrollState = await page.evaluate(() => ({
+    diffTop: document.querySelector('diffs-container').scrollTop,
+    wrapperTop: document.querySelector('.diff-scroll').scrollTop,
+    pageTop: document.scrollingElement.scrollTop,
+  }));
+  assert.ok(standardScrollState.diffTop > 0, `wheel input scrolls the diffs-container: ${JSON.stringify(standardScrollState)}`);
+  assert.equal(standardScrollState.wrapperTop, 0, `the outer diff wrapper stays in place: ${JSON.stringify(standardScrollState)}`);
+  assert.equal(standardScrollState.pageTop, 0, `the document stays in place: ${JSON.stringify(standardScrollState)}`);
+  if (process.env.RMR9_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'desktop-zen-diffs-container-scroll.png') });
+  await page.setViewportSize({ width: 650, height: 892 });
+  await page.locator('diffs-container').evaluate(container => container.scrollTo({ top: container.scrollHeight }));
+  await page.waitForFunction(() => {
+    const diff = document.querySelector('diffs-container');
+    return diff && diff.scrollTop > 0 && diff.scrollTop + diff.clientHeight >= diff.scrollHeight - 1;
+  });
+  const compactDiffSafeArea = await page.evaluate(() => {
+    const diff = document.querySelector('diffs-container').getBoundingClientRect();
+    const controls = document.querySelector('#zen-edge-controls').getBoundingClientRect();
+    const activity = document.querySelector('#zen-edge-activity').getBoundingClientRect();
+    return { diffTop: diff.top, diffBottom: diff.bottom, controlsBottom: controls.bottom, activityTop: activity.top };
+  });
+  assert.ok(compactDiffSafeArea.diffTop >= compactDiffSafeArea.controlsBottom, `the scrolled diff stays below the top handle: ${JSON.stringify(compactDiffSafeArea)}`);
+  assert.ok(compactDiffSafeArea.diffBottom <= compactDiffSafeArea.activityTop, `the scrolled diff stays above the bottom handle: ${JSON.stringify(compactDiffSafeArea)}`);
+  if (process.env.RMR9_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, 'desktop-zen-diffs-container-compact-bottom.png') });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator('diffs-container').evaluate(container => container.scrollTo({ top: 0 }));
+  await page.mouse.move(standardHistoryBox.x + standardHistoryBox.width / 2, standardHistoryBox.y + standardHistoryBox.height / 2);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'visible');
+  await page.locator('.zen-revision-row').first().click();
+  await page.waitForFunction(sha => document.querySelector('.zen-revision-row.selected .history-sha')?.textContent === sha, selectedRevision);
+  standardDiffMode = false;
 
   largeDiffMode = true;
   const historyForLargeDiff = page.locator('#zen-edge-history');

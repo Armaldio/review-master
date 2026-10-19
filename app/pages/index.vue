@@ -699,7 +699,7 @@ watch(displayedFiles, files => {
             </div>
           </div>
           <div v-if="(activeFile.collapsed || activeFile.too_large) && (commitInspection || !expandedFiles[fileName(activeFile)])" class="diff-warning"><strong>{{ commitInspection ? 'GitLab did not return the full commit diff.' : activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ commitInspection ? 'Full-file expansion and inline comments are unavailable during commit inspection.' : activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button v-if="!commitInspection" class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
-          <div class="diff-scroll">
+          <div class="diff-scroll" :class="{ 'continuous-scroll': continuous }">
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${file.new_path}`" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">{{ commitInspection ? 'Select file' : 'Comment on file' }}</button></header>
