@@ -146,6 +146,31 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'review progress stays unchanged');
   assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the selected file stays unchanged');
 
+  const scrollProbe = await page.evaluate(() => {
+    const editor = document.querySelector('.diff-shell');
+    // CodeView owns this inner scroll container for large diffs.
+    editor.classList.add('code-view');
+    const filler = document.createElement('div');
+    filler.dataset.scrollProbe = 'true';
+    filler.style.height = '1600px';
+    editor.append(filler);
+    const bounds = editor.getBoundingClientRect();
+    return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+  });
+  await page.mouse.move(scrollProbe.x, scrollProbe.y);
+  await page.mouse.wheel(0, 600);
+  await page.waitForFunction(() => document.querySelector('.diff-shell').scrollTop > 0);
+  const scrollState = await page.evaluate(() => {
+    const editor = document.querySelector('.diff-shell');
+    const documentScroller = document.scrollingElement;
+    const state = { editorTop: editor.scrollTop, editorHeight: editor.clientHeight, editorScrollHeight: editor.scrollHeight, pageTop: documentScroller.scrollTop };
+    editor.querySelector('[data-scroll-probe]')?.remove();
+    editor.classList.remove('code-view');
+    return state;
+  });
+  assert.ok(scrollState.editorScrollHeight > scrollState.editorHeight, 'the CodeView editor has overflow to scroll');
+  assert.ok(scrollState.editorTop > 0 && scrollState.pageTop === 0, `Zen wheel input scrolls the diff without moving the page: ${JSON.stringify(scrollState)}`);
+
   const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
   if (screenshotDir) {
     await mkdir(screenshotDir, { recursive: true });
