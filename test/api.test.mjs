@@ -11,7 +11,7 @@ globalThis.readBody = event => event.body;
 globalThis.getRequestHeader = (event, name) => event.headers?.[name];
 const handler = (await import('../server/api/gitlab.post.ts')).default;
 
-test('allows an explicitly trusted host but still rejects cross-origin requests', async t => {
+test('accepts non-local hosts without allowlisting but still rejects cross-origin requests', async t => {
   const originalFetch = globalThis.fetch;
   const directory = await mkdtemp(join(tmpdir(), 'mergepeek-host-'));
   const config = join(directory, 'accounts.json');
@@ -21,7 +21,7 @@ test('allows an explicitly trusted host but still rejects cross-origin requests'
     allowed: process.env.REVIEW_MASTER_ALLOWED_HOSTS,
   };
   process.env.REVIEW_MASTER_CONFIG = config;
-  process.env.REVIEW_MASTER_ALLOWED_HOSTS = '100.111.167.123';
+  delete process.env.REVIEW_MASTER_ALLOWED_HOSTS;
   globalThis.fetch = async () => new Response(JSON.stringify({ id: 5, username: 'reviewer', email: 'reviewer@example.com' }), { status: 200 });
   t.after(async () => {
     globalThis.fetch = originalFetch;
@@ -31,10 +31,10 @@ test('allows an explicitly trusted host but still rejects cross-origin requests'
   });
 
   const event = origin => ({
-    headers: { host: '100.111.167.123:4173', origin },
+    headers: { host: '186.241.18.236:3001', origin },
     body: { mrUrl: 'https://gitlab.example/group/app/-/merge_requests/7', action: 'invalid' },
   });
-  await assert.rejects(handler(event('http://100.111.167.123:4173')), error => error.statusCode === 400 && error.statusMessage === 'Unknown GitLab action');
+  await assert.rejects(handler(event('http://186.241.18.236:3001')), error => error.statusCode === 400 && error.statusMessage === 'Unknown GitLab action');
   await assert.rejects(handler(event('http://other.example')), error => error.statusCode === 403 && error.statusMessage === 'Cross-origin request rejected');
 });
 

@@ -19,7 +19,8 @@ test('CLI --help prints usage and exits successfully', () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /mpeek <gitlab-mr-url>/);
-  assert.match(result.stdout, /binds to 127\.0\.0\.1:4173 by default; override with REVIEW_MASTER_HOST and REVIEW_MASTER_PORT\. Non-local hosts must be listed in REVIEW_MASTER_ALLOWED_HOSTS/);
+  assert.match(result.stdout, /binds to 127\.0\.0\.1:4173 by default; override with REVIEW_MASTER_HOST and REVIEW_MASTER_PORT/);
+  assert.doesNotMatch(result.stdout, /REVIEW_MASTER_ALLOWED_HOSTS/);
 });
 
 test('published package exposes mpeek and retains the old command as an alias', async () => {
