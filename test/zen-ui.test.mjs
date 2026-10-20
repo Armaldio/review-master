@@ -191,8 +191,10 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   await page.locator('diffs-container').waitFor();
 
   await page.getByRole('checkbox', { name: 'Auto-advance to next unreviewed file' }).uncheck();
+  const unreviewedProgress = await page.locator('.topbar .progress-label').innerText();
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
   const progressBefore = await page.locator('.topbar .progress-label').innerText();
+  assert.notEqual(progressBefore, unreviewedProgress, 'marking the active file reviewed updates review progress');
   await page.evaluate(() => { window.__zenDiff = document.querySelector('diffs-container'); });
   const pathBefore = await page.locator('.path-label strong').innerText();
   await page.locator('#review-comment').fill('Revision draft stays with its file');
@@ -221,15 +223,19 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.locator('#zen-history-panel').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'History is fully hidden while idle');
   assert.equal(await page.locator('.comment-panel').evaluate(element => getComputedStyle(element).visibility), 'hidden', 'Activity and comments are fully hidden while idle');
   assert.equal(await page.locator('.zen-edge').count(), 4, 'four accessible edge handles remain available');
-  const zenFileReviewToggle = page.locator('.review-main > .file-toolbar .review-toggle');
-  assert.equal(await zenFileReviewToggle.isVisible(), true, 'the active file review action stays visible in the Zen header');
-  assert.equal(await zenFileReviewToggle.innerText(), 'Mark unreviewed', 'the Zen header reflects the active file review state');
+  const zenFileReviewToggle = page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle');
+  assert.equal(await zenFileReviewToggle.isVisible(), true, 'the active file review action stays visible in the PierreDiff header');
+  assert.equal(await zenFileReviewToggle.innerText(), 'Mark unreviewed', 'the PierreDiff header reflects the active file review state');
+  const reviewButtonBox = await zenFileReviewToggle.boundingBox();
+  const diffBox = await page.locator('diffs-container').boundingBox();
+  assert.ok(reviewButtonBox.y - diffBox.y < 60 && reviewButtonBox.x > diffBox.x + diffBox.width / 2, 'the review action sits at the top right of the diff header');
+  assert.equal(await page.locator('.review-main > .file-toolbar').evaluate(element => element.getAttribute('aria-hidden')), 'true', 'the duplicate file toolbar is hidden in Zen');
   const zenProgressBeforeToggle = await page.locator('.topbar .progress-label').innerText();
   await zenFileReviewToggle.click();
-  assert.equal(await zenFileReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed directly from the Zen header');
+  assert.equal(await zenFileReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed directly from the PierreDiff header');
   assert.notEqual(await page.locator('.topbar .progress-label').innerText(), zenProgressBeforeToggle, 'the Zen header action updates review progress');
   await zenFileReviewToggle.click();
-  assert.equal(await zenFileReviewToggle.innerText(), 'Mark unreviewed', 'the file can be marked reviewed directly from the Zen header');
+  assert.equal(await zenFileReviewToggle.innerText(), 'Mark unreviewed', 'the file can be marked reviewed directly from the PierreDiff header');
   assert.equal(await page.locator('.topbar .progress-label').innerText(), zenProgressBeforeToggle, 'the Zen header can restore the file review state');
   assert.equal(await page.locator('.topbar .progress-label').innerText(), progressBefore, 'review progress stays unchanged');
   assert.equal(await page.locator('.path-label strong').innerText(), pathBefore, 'the selected file stays unchanged');
@@ -309,6 +315,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
     const view = window.__INSTANCE;
     return view?.workerManager?.getStats().managerState === 'initialized' && view.renderState.firstIndex >= 0;
   }, null, { timeout: 30_000 });
+  assert.equal(await page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle').isVisible(), true, 'large Zen diffs also show the review action in their PierreDiff header');
   const scrollProbe = await page.locator('.diff-shell.code-view').evaluate(editor => {
     const bounds = editor.getBoundingClientRect();
     return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
@@ -411,7 +418,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   await page.locator('diffs-container').waitFor();
   assert.equal(await page.locator('.path-label strong').innerText(), 'src/commit.ts', 'selecting a commit loads its own GitLab diff');
   assert.ok((await page.locator('.commit-inspection-banner').innerText()).includes('Push version'), 'the UI distinguishes commit inspection from push-version selection');
-  assert.equal(await page.locator('.file-heading .review-toggle').isDisabled(), true, 'commit inspection cannot mark a revision file reviewed');
+  assert.equal(await page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle').isDisabled(), true, 'commit inspection cannot mark a revision file reviewed');
   assert.equal(calls.filter(action => action === 'version-diff').length, versionDiffCallsBeforeCommitInspection, 'commit inspection does not navigate or fetch a push revision');
 
   const activityHandle = page.locator('#zen-edge-activity');
@@ -489,13 +496,13 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.getByRole('button', { name: '↻ Refresh' }).isVisible(), true, 'the existing mobile refresh action remains visible');
   await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
   await page.locator('.review-layout.zen-mode').waitFor();
-  const mobileZenReviewToggle = page.locator('.review-main > .file-toolbar .review-toggle');
-  assert.equal(await mobileZenReviewToggle.isVisible(), true, 'the file review action stays available in the mobile Zen header');
-  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark unreviewed', 'the mobile Zen header reflects the active file review state');
+  const mobileZenReviewToggle = page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle');
+  assert.equal(await mobileZenReviewToggle.isVisible(), true, 'the file review action stays available in the mobile PierreDiff header');
+  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark unreviewed', 'the mobile PierreDiff header reflects the active file review state');
   await mobileZenReviewToggle.click();
-  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed from the mobile Zen header');
+  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed from the mobile PierreDiff header');
   await mobileZenReviewToggle.click();
-  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark unreviewed', 'the mobile Zen header can restore the file review state');
+  assert.equal(await mobileZenReviewToggle.innerText(), 'Mark unreviewed', 'the mobile PierreDiff header can restore the file review state');
   if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'mobile-zen-idle-review-toggle.png') });
   const touchHistory = page.locator('#zen-edge-history');
   const touchHistoryBox = await touchHistory.boundingBox();

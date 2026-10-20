@@ -207,11 +207,11 @@ async function selectHistoryVersion(versionId: number) {
 async function showLatestVersion() {
   if (app.latestVersionId.value != null) await selectHistoryVersion(app.latestVersionId.value);
 }
-function toggleReviewed() {
-  if (commitInspection.value || !activeFile.value?.identity) return;
-  const mark = !isReviewed(activeFile.value);
-  app.setReviewed(activeFile.value, mark);
-  if (mark && app.autoAdvance.value) navigate(1);
+function toggleReviewed(file: any = activeFile.value, autoAdvance = true) {
+  if (commitInspection.value || !file?.identity) return;
+  const mark = !isReviewed(file);
+  app.setReviewed(file, mark);
+  if (mark && autoAdvance && app.autoAdvance.value) navigate(1);
 }
 function navigate(delta: number) {
   const rows = displayedFiles.value;
@@ -614,7 +614,6 @@ watch(displayedFiles, files => {
       </div>
       <div class="zen-control-row zen-review-controls">
         <span v-if="!commitInspection" class="progress-label">{{ reviewedCount }}/{{ app.files.value.length }} · {{ progress }}%</span>
-        <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="Boolean(commitInspection) || !activeFile?.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
         <button class="quiet" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
         <button class="quiet" aria-label="Next unreviewed file" :disabled="Boolean(commitInspection)" @click="navigate(1)">Next unreviewed →</button>
         <label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
@@ -672,10 +671,10 @@ watch(displayedFiles, files => {
         <div v-else-if="commitInspection && !sourceFiles.length" class="empty-state">GitLab returned no file changes for this commit.</div>
         <template v-else-if="activeFile">
           <div v-if="commitInspection" class="commit-inspection-banner" role="status"><strong>Inspecting {{ commitInspection.commit.short_id || commitInspection.commit.id.slice(0, 8) }}</strong><span>{{ commitInspection.commit.title }} · Push version {{ app.selectedVersionId.value }} remains selected</span><span>Comments are posted at merge request level.</span></div>
-          <div class="file-toolbar">
+          <div class="file-toolbar" :aria-hidden="zenMode" :inert="zenMode">
             <div class="file-heading">
               <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="commitInspection" class="commit-inspection-label">Commit inspection · push version {{ app.selectedVersionId.value }} remains selected</span><span v-else-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="Boolean(commitInspection) || !activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
+              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="Boolean(commitInspection) || !activeFile.identity" @click="toggleReviewed(activeFile)">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
             </div>
             <div class="file-actions">
               <div class="review-actions">
@@ -703,12 +702,12 @@ watch(displayedFiles, files => {
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${file.new_path}`" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">{{ commitInspection ? 'Select file' : 'Comment on file' }}</button></header>
-              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" :show-review-action="zenMode" :reviewed="isReviewed(file)" :review-disabled="Boolean(commitInspection) || !file.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(file, false)" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${fileName(activeFile)}`" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="commitInspection ? undefined : expandedFiles[fileName(activeFile)]" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${fileName(activeFile)}`" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="commitInspection ? undefined : expandedFiles[fileName(activeFile)]" :show-review-action="zenMode" :reviewed="isReviewed(activeFile)" :review-disabled="Boolean(commitInspection) || !activeFile.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(activeFile)" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>

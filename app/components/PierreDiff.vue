@@ -16,9 +16,9 @@ function getWorkerPool() {
   return workerPool;
 }
 
-const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null } }>();
+const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null }; showReviewAction?: boolean; reviewed?: boolean; reviewDisabled?: boolean }>();
 const emit = defineEmits<{
-  (event: 'ready'): void;
+  (event: 'ready' | 'reviewToggle'): void;
   (event: 'lineSelected', line: { lineNumber: number; side: 'new' | 'old' }): void;
   (event: 'lineRange', range: SelectedLineRange): void;
 }>();
@@ -35,8 +35,26 @@ let metadata: ReturnType<typeof parseDiffFromFile> | undefined;
 let contentLines = 0;
 let previousMode = props.mode;
 let previousWrap = props.wrap;
+let previousShowReviewAction = props.showReviewAction;
+let previousReviewed = props.reviewed;
+let previousReviewDisabled = props.reviewDisabled;
 let readyObserver: MutationObserver | null = null;
 let readyEmitted = false;
+function renderReviewAction() {
+  const button = document.createElement('button');
+  const label = props.reviewed ? 'Mark unreviewed' : 'Mark reviewed';
+  button.type = 'button';
+  button.className = `review-toggle pierre-review-toggle${props.reviewed ? ' reviewed' : ''}`;
+  button.textContent = label;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.disabled = Boolean(props.reviewDisabled);
+  button.addEventListener('click', event => {
+    event.stopPropagation();
+    emit('reviewToggle');
+  });
+  return button;
+}
 function notifyReady() {
   if (readyEmitted || !target.value) return;
   const root = target.value.querySelector('diffs-container')?.shadowRoot;
@@ -54,11 +72,16 @@ function render() {
   if (!target.value) return;
   let metadataChanged = false;
   const optionsChanged = previousMode !== props.mode || previousWrap !== props.wrap;
+  const reviewHeaderChanged = previousShowReviewAction !== props.showReviewAction || previousReviewed !== props.reviewed || previousReviewDisabled !== props.reviewDisabled;
   previousMode = props.mode;
   previousWrap = props.wrap;
+  previousShowReviewAction = props.showReviewAction;
+  previousReviewed = props.reviewed;
+  previousReviewDisabled = props.reviewDisabled;
   const options: FileDiffOptions<any, any> = {
     theme: { dark: 'pierre-dark', light: 'pierre-light' }, diffStyle: props.mode, overflow: props.wrap ? 'wrap' : 'scroll', stickyHeader: true,
     enableLineSelection: true,
+    renderHeaderMetadata: props.showReviewAction ? renderReviewAction : undefined,
     onLineClick: ({ lineNumber, annotationSide }: { lineNumber: number; annotationSide: AnnotationSide }) => emit('lineSelected', { lineNumber, side: annotationSide === 'additions' ? 'new' : 'old' }),
     onLineSelectionEnd: (range: SelectedLineRange | null) => { if (range) emit('lineRange', range); },
   } as Omit<FileDiffOptions<any, any>, 'hunkSeparators'>;
@@ -118,14 +141,14 @@ function render() {
   }
   if (viewKind === 'code') {
     if (!view) {
-      const codeView = new CodeView(codeViewOptions, getWorkerPool(), true);
+      const codeView = new CodeView(codeViewOptions, getWorkerPool());
       codeView.setup(target.value);
       codeView.setItems([{ id: props.path, type: 'diff', fileDiff: metadata, version: ++codeViewItemVersion }]);
       view = codeView;
     } else {
       const codeView = view as CodeView<any, any>;
       if (metadataChanged) codeView.setItems([{ id: props.path, type: 'diff', fileDiff: metadata, version: ++codeViewItemVersion }]);
-      if (optionsChanged) codeView.setOptions(codeViewOptions);
+      if (optionsChanged || reviewHeaderChanged) codeView.setOptions(codeViewOptions);
     }
     notifyReady();
     return;
@@ -135,22 +158,22 @@ function render() {
     if (!scrollRoot) return;
     virtualizer = new Virtualizer({ overscrollSize: 250 });
     virtualizer.setup(scrollRoot as HTMLElement);
-    view = new VirtualizedFileDiff(options, virtualizer, undefined, getWorkerPool(), true);
+    view = new VirtualizedFileDiff(options, virtualizer, undefined, getWorkerPool());
   } else if (!view) {
     fileContainer = document.createElement('diffs-container');
     target.value.appendChild(fileContainer);
-    view = new FileDiff(options, undefined, true);
+    view = new FileDiff(options);
   } else (view as FileDiff<any, any> | VirtualizedFileDiff<any, any>).setOptions(options as FileDiffOptions<any, any>);
   const oldFile = props.fullFiles ? { name: props.fullFiles.oldContent === null ? '/dev/null' : props.path, contents: props.fullFiles.oldContent || '' } as FileContents : undefined;
   const newFile = props.fullFiles ? { name: props.fullFiles.newContent === null ? '/dev/null' : props.path, contents: props.fullFiles.newContent || '' } as FileContents : undefined;
   const simpleView = view as FileDiff<any, any> | VirtualizedFileDiff<any, any>;
-  const renderProps = { fileContainer: fileContainer!, fileDiff: metadata, forceRender: optionsChanged };
+  const renderProps = { fileContainer: fileContainer!, fileDiff: metadata, forceRender: optionsChanged || reviewHeaderChanged };
   if (oldFile && newFile) simpleView.render({ ...renderProps, oldFile, newFile });
   else simpleView.render(renderProps);
   notifyReady();
 }
 onMounted(render);
-watch(() => [props.diff, props.path, props.mode, props.wrap, props.continuous, props.fullFiles], render);
+watch(() => [props.diff, props.path, props.mode, props.wrap, props.continuous, props.fullFiles, props.showReviewAction, props.reviewed, props.reviewDisabled], render);
 onBeforeUnmount(() => { readyObserver?.disconnect(); view?.cleanUp(); virtualizer?.cleanUp(); });
 </script>
 <template><div ref="target" class="diff-shell" :class="{ wrap }" :data-path="path" /></template>
