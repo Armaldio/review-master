@@ -30,6 +30,28 @@ async function availablePort() {
   return port;
 }
 
+async function assertDropdownIsClickableAboveContent(page, selector, screenshotName) {
+  const menu = page.locator(selector);
+  await menu.locator('summary').click();
+  const popover = menu.locator('.action-menu-popover');
+  const firstAction = popover.locator('button').first();
+  await firstAction.waitFor();
+  const actionBox = await firstAction.boundingBox();
+  const popoverBox = await popover.boundingBox();
+  const headerBox = await page.locator('.topbar').boundingBox();
+  assert.ok(popoverBox.y + popoverBox.height > headerBox.y + headerBox.height, 'the menu extends beyond the topbar');
+  const receivesPointer = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.action-menu-popover') !== null, {
+    x: actionBox.x + actionBox.width / 2,
+    y: actionBox.y + actionBox.height / 2,
+  });
+  assert.equal(receivesPointer, true, 'the first menu action is above and clickable over review content');
+  if (process.env.RMR9_SCREENSHOT_DIR) {
+    await mkdir(process.env.RMR9_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({ path: join(process.env.RMR9_SCREENSHOT_DIR, screenshotName) });
+  }
+  await menu.locator('summary').click();
+}
+
 test('Zen panels preserve review context, inspect real commits, and work with keyboard and touch', { timeout: 120_000 }, async t => {
   let versions = [push(2, 'head-two'), push(1, 'head-one')];
   const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
@@ -220,6 +242,10 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await standardFileReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed from the standard PierreDiff header');
   await standardFileReviewToggle.click();
   assert.equal(await standardFileReviewToggle.innerText(), 'Mark unreviewed', 'the standard PierreDiff header can restore the file review state');
+  await assertDropdownIsClickableAboveContent(page, '.topbar .action-menu', 'desktop-more-menu.png');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertDropdownIsClickableAboveContent(page, '.topbar .action-menu', 'mobile-more-menu.png');
+  await page.setViewportSize({ width: 1440, height: 900 });
   if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'desktop-standard-pierre-header.png') });
 
   const callsBeforeZen = [...calls];
@@ -508,6 +534,7 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   assert.equal(await page.getByRole('button', { name: 'Enter Zen Mode' }).isVisible(), true, 'Zen mode remains available in the mobile header');
   assert.equal(await page.getByRole('button', { name: '↻ Refresh' }).isVisible(), true, 'the existing mobile refresh action remains visible');
   assert.equal(await page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle').isVisible(), true, 'the mobile file review action stays in the PierreDiff header outside Zen');
+  await assertDropdownIsClickableAboveContent(page, '.topbar .action-menu', 'mobile-more-menu-after-zen.png');
   if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'mobile-standard-pierre-header.png') });
   await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
   await page.locator('.review-layout.zen-mode').waitFor();

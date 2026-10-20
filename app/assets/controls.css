@@ -83,7 +83,7 @@
 /* Zen mode keeps the review renderer in place while its surrounding panels retreat. */
 .workspace > .topbar {
   max-height: 256px;
-  overflow: hidden;
+  overflow: visible;
   transition: max-height 280ms ease, opacity 180ms ease, padding 280ms ease, border-color 280ms ease, transform 280ms ease;
 }
 
@@ -94,6 +94,7 @@
 .workspace.zen-mode > .topbar {
   max-height: 0;
   min-height: 0;
+  overflow: hidden;
   padding-block: 0;
   border: 0;
   opacity: 0;
