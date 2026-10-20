@@ -674,7 +674,6 @@ watch(displayedFiles, files => {
           <div class="file-toolbar" :aria-hidden="zenMode" :inert="zenMode">
             <div class="file-heading">
               <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="commitInspection" class="commit-inspection-label">Commit inspection · push version {{ app.selectedVersionId.value }} remains selected</span><span v-else-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="Boolean(commitInspection) || !activeFile.identity" @click="toggleReviewed(activeFile)">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
             </div>
             <div class="file-actions">
               <div class="review-actions">
@@ -702,12 +701,12 @@ watch(displayedFiles, files => {
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
               <article v-for="file in displayedFiles" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${file.new_path}`" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
                 <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">{{ commitInspection ? 'Select file' : 'Comment on file' }}</button></header>
-              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" :show-review-action="zenMode" :reviewed="isReviewed(file)" :review-disabled="Boolean(commitInspection) || !file.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(file, false)" />
+                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" :reviewed="isReviewed(file)" :review-disabled="Boolean(commitInspection) || !file.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(file, false)" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${fileName(activeFile)}`" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="commitInspection ? undefined : expandedFiles[fileName(activeFile)]" :show-review-action="zenMode" :reviewed="isReviewed(activeFile)" :review-disabled="Boolean(commitInspection) || !activeFile.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(activeFile)" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${fileName(activeFile)}`" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="commitInspection ? undefined : expandedFiles[fileName(activeFile)]" :reviewed="isReviewed(activeFile)" :review-disabled="Boolean(commitInspection) || !activeFile.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(activeFile)" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>

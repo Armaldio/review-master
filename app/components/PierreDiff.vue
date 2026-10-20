@@ -16,7 +16,7 @@ function getWorkerPool() {
   return workerPool;
 }
 
-const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null }; showReviewAction?: boolean; reviewed?: boolean; reviewDisabled?: boolean }>();
+const props = defineProps<{ diff: string; path: string; oldPath?: string; newFile?: boolean; deletedFile?: boolean; mode: 'split' | 'unified'; wrap: boolean; continuous?: boolean; fullFiles?: { oldContent: string | null; newContent: string | null }; reviewed?: boolean; reviewDisabled?: boolean }>();
 const emit = defineEmits<{
   (event: 'ready' | 'reviewToggle'): void;
   (event: 'lineSelected', line: { lineNumber: number; side: 'new' | 'old' }): void;
@@ -35,7 +35,6 @@ let metadata: ReturnType<typeof parseDiffFromFile> | undefined;
 let contentLines = 0;
 let previousMode = props.mode;
 let previousWrap = props.wrap;
-let previousShowReviewAction = props.showReviewAction;
 let previousReviewed = props.reviewed;
 let previousReviewDisabled = props.reviewDisabled;
 let readyObserver: MutationObserver | null = null;
@@ -72,16 +71,15 @@ function render() {
   if (!target.value) return;
   let metadataChanged = false;
   const optionsChanged = previousMode !== props.mode || previousWrap !== props.wrap;
-  const reviewHeaderChanged = previousShowReviewAction !== props.showReviewAction || previousReviewed !== props.reviewed || previousReviewDisabled !== props.reviewDisabled;
+  const reviewHeaderChanged = previousReviewed !== props.reviewed || previousReviewDisabled !== props.reviewDisabled;
   previousMode = props.mode;
   previousWrap = props.wrap;
-  previousShowReviewAction = props.showReviewAction;
   previousReviewed = props.reviewed;
   previousReviewDisabled = props.reviewDisabled;
   const options: FileDiffOptions<any, any> = {
     theme: { dark: 'pierre-dark', light: 'pierre-light' }, diffStyle: props.mode, overflow: props.wrap ? 'wrap' : 'scroll', stickyHeader: true,
     enableLineSelection: true,
-    renderHeaderMetadata: props.showReviewAction ? renderReviewAction : undefined,
+    renderHeaderMetadata: renderReviewAction,
     onLineClick: ({ lineNumber, annotationSide }: { lineNumber: number; annotationSide: AnnotationSide }) => emit('lineSelected', { lineNumber, side: annotationSide === 'additions' ? 'new' : 'old' }),
     onLineSelectionEnd: (range: SelectedLineRange | null) => { if (range) emit('lineRange', range); },
   } as Omit<FileDiffOptions<any, any>, 'hunkSeparators'>;
@@ -173,7 +171,7 @@ function render() {
   notifyReady();
 }
 onMounted(render);
-watch(() => [props.diff, props.path, props.mode, props.wrap, props.continuous, props.fullFiles, props.showReviewAction, props.reviewed, props.reviewDisabled], render);
+watch(() => [props.diff, props.path, props.mode, props.wrap, props.continuous, props.fullFiles, props.reviewed, props.reviewDisabled], render);
 onBeforeUnmount(() => { readyObserver?.disconnect(); view?.cleanUp(); virtualizer?.cleanUp(); });
 </script>
 <template><div ref="target" class="diff-shell" :class="{ wrap }" :data-path="path" /></template>

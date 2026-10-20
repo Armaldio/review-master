@@ -35,7 +35,7 @@
 .display-popover{min-width:170px;gap:8px;padding:10px}
 .display-popover .wrap-toggle{cursor:pointer}
 @media(max-width:1000px){.top-actions{gap:3px}.progress-label{display:inline-flex}}
-@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-heading .review-toggle{flex:none;min-width:0}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
+@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
 @media(prefers-color-scheme:dark){:root{--review-action-ink:#102d27}}
 
 /* Keep the file controls beside the path so they leave more room for the diff. */

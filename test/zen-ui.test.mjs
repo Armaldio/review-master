@@ -32,6 +32,7 @@ async function availablePort() {
 
 test('Zen panels preserve review context, inspect real commits, and work with keyboard and touch', { timeout: 120_000 }, async t => {
   let versions = [push(2, 'head-two'), push(1, 'head-one')];
+  const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
   const calls = [];
   const submittedComments = [];
   const port = await availablePort();
@@ -208,6 +209,19 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   await page.locator('iframe[title="Merge request preview"]').waitFor();
   await page.getByRole('button', { name: 'Unified', exact: true }).click();
 
+  const standardFileReviewToggle = page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle');
+  assert.equal(await standardFileReviewToggle.isVisible(), true, 'the active file review action stays in the PierreDiff header outside Zen');
+  assert.equal(await standardFileReviewToggle.innerText(), 'Mark unreviewed', 'the standard PierreDiff header reflects the active file review state');
+  const standardReviewButtonBox = await standardFileReviewToggle.boundingBox();
+  const standardDiffBox = await page.locator('diffs-container').boundingBox();
+  assert.ok(standardReviewButtonBox.y - standardDiffBox.y < 60 && standardReviewButtonBox.x > standardDiffBox.x + standardDiffBox.width / 2, 'the standard review action sits at the top right of the diff header');
+  assert.equal(await page.locator('.file-toolbar .review-toggle').count(), 0, 'the file toolbar does not duplicate the PierreDiff review action');
+  await standardFileReviewToggle.click();
+  assert.equal(await standardFileReviewToggle.innerText(), 'Mark reviewed', 'the file can be marked unreviewed from the standard PierreDiff header');
+  await standardFileReviewToggle.click();
+  assert.equal(await standardFileReviewToggle.innerText(), 'Mark unreviewed', 'the standard PierreDiff header can restore the file review state');
+  if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'desktop-standard-pierre-header.png') });
+
   const callsBeforeZen = [...calls];
   await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
   await page.locator('.review-layout.zen-mode').waitFor();
@@ -354,7 +368,6 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   await page.mouse.move(720, 430);
   await page.waitForFunction(() => getComputedStyle(document.querySelector('#zen-history-panel')).visibility === 'hidden');
 
-  const screenshotDir = process.env.RMR9_SCREENSHOT_DIR;
   if (screenshotDir) {
     await mkdir(screenshotDir, { recursive: true });
     await page.screenshot({ path: join(screenshotDir, 'desktop-zen-idle.png') });
@@ -494,6 +507,8 @@ test('Zen panels preserve review context, inspect real commits, and work with ke
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.getByRole('button', { name: 'Enter Zen Mode' }).isVisible(), true, 'Zen mode remains available in the mobile header');
   assert.equal(await page.getByRole('button', { name: '↻ Refresh' }).isVisible(), true, 'the existing mobile refresh action remains visible');
+  assert.equal(await page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle').isVisible(), true, 'the mobile file review action stays in the PierreDiff header outside Zen');
+  if (screenshotDir) await page.screenshot({ path: join(screenshotDir, 'mobile-standard-pierre-header.png') });
   await page.getByRole('button', { name: 'Enter Zen Mode' }).click();
   await page.locator('.review-layout.zen-mode').waitFor();
   const mobileZenReviewToggle = page.locator('diffs-container [slot="header-metadata"] .pierre-review-toggle');
