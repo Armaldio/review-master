@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { useReview } from '~/composables/useReview';
+import { useZenReview } from '~/composables/useZenReview';
 import { codeownersForPath } from '#shared/codeowners';
 
 const app = useReview();
@@ -62,6 +63,14 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 let hydratedDiffKey = '';
 
 const fileName = (file: any) => file?.new_file ? file.new_path : file?.deleted_file ? file.old_path : file?.new_path;
+const {
+  zenMode, zenPanel, zenHistoryTab, commits, commitsLoading, commitsLoaded, commitsFailed,
+  commitInspection, selectedCommitPath, commitDiffLoading,
+  clearZenCloseTimer, closeZenActionMenu, closeZenPanel, commitTime, inspectCommit,
+  loadCommits, onZenHandlePointerEnter, onZenHandlePointerLeave, onZenKeydown,
+  onZenPanelFocusOut, onZenPanelPointerEnter, onZenPanelPointerLeave,
+  returnToSelectedRevision, selectZenHistoryTab, toggleZenMode, toggleZenPanel,
+} = useZenReview(app, closeActionMenu, fileName);
 const ownerRules = computed(() => app.review.value?.codeowners || []);
 function matchOwner(filePath: string) {
   if (!app.review.value || app.review.value.ownerWarning) return null;
@@ -73,14 +82,16 @@ function matchOwner(filePath: string) {
   if (matched.owners.some(owner => status[owner] === null || status[owner] === undefined)) return null;
   return false;
 }
-const eligibleFiles = computed(() => app.files.value.filter(file => {
+const sourceFiles = computed(() => commitInspection.value?.files ?? app.files.value);
+const eligibleFiles = computed(() => sourceFiles.value.filter(file => {
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) return false;
-  if (showAll.value) return true;
+  if (commitInspection.value || showAll.value) return true;
   return matchOwner(fileName(file)) === true;
 }));
-const activeFile = computed(() => eligibleFiles.value.find(file => fileName(file) === app.selectedPath.value) ?? eligibleFiles.value[0] ?? null);
+const activePath = computed(() => commitInspection.value ? selectedCommitPath.value : app.selectedPath.value);
+const activeFile = computed(() => eligibleFiles.value.find(file => fileName(file) === activePath.value) ?? eligibleFiles.value[0] ?? null);
 const displayedFiles = computed(() => eligibleFiles.value);
-const selectedDiff = computed(() => Boolean(activeFile.value?.diff || expandedFiles.value[fileName(activeFile.value)]));
+const selectedDiff = computed(() => Boolean(activeFile.value?.diff || (!commitInspection.value && expandedFiles.value[fileName(activeFile.value)])));
 const lineCountCache = new WeakMap<object, number>();
 function changedLineCount(file: any): number {
   const cached = lineCountCache.get(file);
@@ -106,9 +117,10 @@ const draftNoteList = computed(() => app.review.value?.draftNotes || []);
 const reviewerState = computed(() => app.review.value?.mr.reviewers?.find((reviewer: any) => String(reviewer.id) === String(app.review.value?.user.id))?.state || 'unreviewed');
 const previewOrigin = computed(() => { try { return new URL(previewUrl.value).origin; } catch { return "'none'"; } });
 const framePolicy = computed(() => `frame-src 'self' ${previewOrigin.value}; object-src 'none'; base-uri 'self'`);
-const hasUnknownOwner = computed(() => !app.ownershipPending.value && app.files.value.some(file => matchOwner(fileName(file)) === null));
+const hasUnknownOwner = computed(() => !commitInspection.value && !app.ownershipPending.value && sourceFiles.value.some(file => matchOwner(fileName(file)) === null));
 const currentIncrementalVersion = computed(() => app.selectedVersionId.value === app.latestVersionId.value && !app.review.value?.versionIsInitial);
 const lineCommentStatus = computed(() => {
+  if (commitInspection.value) return 'Commit inspection has no verified merge request line positions. Comments are posted at MR level.';
   if (lineCommentFeedback.value) return lineCommentFeedback.value;
   if (app.review.value?.versionIsInitial) return '';
   if (currentIncrementalVersion.value) return "Inline comments are available only on changed lines that GitLab also exposes in the current MR diff. Other comments are posted at MR level.";
@@ -145,6 +157,14 @@ function renderMarkdown(source: string) {
 
 function setFile(file: any) {
   if (!showAll.value && !eligibleFiles.value.some(candidate => fileName(candidate) === fileName(file))) return;
+  if (commitInspection.value) {
+    selectedCommitPath.value = fileName(file);
+    if (!continuous.value) {
+      document.querySelector('.diff-scroll')?.scrollTo({ top: 0 });
+      document.querySelector('.diff-shell.code-view')?.scrollTo({ top: 0 });
+    }
+    return;
+  }
   app.selectedPath.value = fileName(file);
   const key = `comment:${fileName(file)}`;
   comment.value = app.drafts.value[key] || '';
@@ -154,11 +174,12 @@ function setFile(file: any) {
   }
 }
 function openProgressSegment(file: any) {
+  if (commitInspection.value) return;
   if (!showAll.value && matchOwner(fileName(file)) !== true) return;
   if (query.value && !fileName(file).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
   setFile(file);
 }
-function isReviewed(file: any) { return Boolean(file.identity && app.reviewed.value[fileName(file)] === file.identity); }
+function isReviewed(file: any) { return Boolean(!commitInspection.value && file?.identity && app.reviewed.value[fileName(file)] === file.identity); }
 function isUnreadVersion(version: { id: number }) { return app.unreadVersions.value.some(item => item.id === version.id); }
 function shortSha(version: { head_commit_sha: string }) { return version.head_commit_sha?.slice(0, 8) || 'SHA unavailable'; }
 function pushTime(version: { created_at: string }) {
@@ -173,6 +194,7 @@ function versionStatus(version: { id: number }) {
 }
 async function selectHistoryVersion(versionId: number) {
   if (!await app.selectVersion(versionId)) return;
+  returnToSelectedRevision();
   sidebarTab.value = 'files';
   expandedFiles.value = {};
   inlinePosition.value = null;
@@ -185,16 +207,16 @@ async function selectHistoryVersion(versionId: number) {
 async function showLatestVersion() {
   if (app.latestVersionId.value != null) await selectHistoryVersion(app.latestVersionId.value);
 }
-function toggleReviewed() {
-  if (!activeFile.value?.identity) return;
-  const mark = !isReviewed(activeFile.value);
-  app.setReviewed(activeFile.value, mark);
-  if (mark && app.autoAdvance.value) navigate(1);
+function toggleReviewed(file: any = activeFile.value, autoAdvance = true) {
+  if (commitInspection.value || !file?.identity) return;
+  const mark = !isReviewed(file);
+  app.setReviewed(file, mark);
+  if (mark && autoAdvance && app.autoAdvance.value) navigate(1);
 }
 function navigate(delta: number) {
   const rows = displayedFiles.value;
   if (!rows.length) return;
-  const index = rows.findIndex((file: any) => fileName(file) === app.selectedPath.value);
+  const index = rows.findIndex((file: any) => fileName(file) === activePath.value);
   for (let step = 1; step <= rows.length; step++) {
     const target = rows[(index + delta * step + rows.length) % rows.length];
     if (target && delta > 0 && !isReviewed(target)) return setFile(target);
@@ -204,15 +226,17 @@ function navigate(delta: number) {
 }
 function saveDraft() {
   if (!activeFile.value) return;
+  if (commitInspection.value) return app.setDraft('mr:comment', comment.value);
   app.setDraft(`comment:${fileName(activeFile.value)}`, comment.value);
 }
 async function sendComment() {
   if (commentBusy.value || !comment.value.trim() || !activeFile.value) return;
+  const inspectingCommit = Boolean(commitInspection.value);
   commentBusy.value = true;
   try {
-    await app.call('comment', { body: comment.value, draft: commentDraft.value, ...(inlinePosition.value ? { position: inlinePosition.value } : {}) });
+    await app.call('comment', { body: comment.value, draft: commentDraft.value, ...(!inspectingCommit && inlinePosition.value ? { position: inlinePosition.value } : {}) });
     comment.value = '';
-    inlinePosition.value = null;
+    if (!inspectingCommit) inlinePosition.value = null;
     saveDraft();
     if (!commentDraft.value) await app.refresh();
     notice.value = commentDraft.value ? 'Saved as a GitLab draft note' : 'Comment posted';
@@ -225,6 +249,7 @@ function positionBase(useOfficialVersionRefs = false) {
   return { base_sha: refs.base_sha, head_sha: refs.head_sha, start_sha: refs.start_sha, old_path: activeFile.value.old_path, new_path: activeFile.value.new_path, position_type: 'text' };
 }
 function selectDiffLine(line: { lineNumber: number; side: 'new' | 'old' }) {
+  if (commitInspection.value) return;
   const review = app.review.value;
   const incrementalLatest = currentIncrementalVersion.value;
   if (!review?.versionIsInitial && !incrementalLatest) {
@@ -247,6 +272,7 @@ function selectDiffLine(line: { lineNumber: number; side: 'new' | 'old' }) {
   inlinePosition.value = { ...base, [line.side === 'new' ? 'new_line' : 'old_line']: line.lineNumber };
 }
 function selectDiffRange(range: { start: number; end: number; side?: string; endSide?: string }) {
+  if (commitInspection.value) return;
   const review = app.review.value;
   if (currentIncrementalVersion.value) {
     inlinePosition.value = null;
@@ -271,6 +297,7 @@ function selectDiffRange(range: { start: number; end: number; side?: string; end
   inlinePosition.value = { ...base, line_range: { start: point(range.start, range.side), end: point(range.end, range.endSide) } };
 }
 async function expandFile(file: any) {
+  if (commitInspection.value) return;
   const path = fileName(file);
   if (expandedFiles.value[path]) return;
   expandingPath.value = path;
@@ -389,6 +416,12 @@ async function refreshReview(force = false) {
     scheduleReviewSupplementals(false);
   }
 }
+async function refreshZenReview(event: MouseEvent) {
+  const trigger = event.currentTarget as HTMLButtonElement;
+  await refreshReview(true);
+  await nextTick();
+  if (zenMode.value && zenPanel.value === 'controls' && trigger.isConnected) trigger.focus();
+}
 function onVisibility() { if (!document.hidden) void refreshReview(); }
 function showSummary(intent: 'summary' | 'changes') { summaryIntent.value = intent; summary.value = app.drafts.value['mr:summary'] || ''; summaryOpen.value = true; }
 function showReply(discussionId: string) { replyTo.value = discussionId; replyText.value = app.drafts.value[`reply:${discussionId}`] || ''; }
@@ -401,6 +434,17 @@ function toggleTheme() {
 
 function closeActionMenu() {
   if (actionMenu.value) actionMenu.value.open = false;
+}
+async function selectZenRevision(versionId: number) {
+  if (!await app.selectVersion(versionId)) return;
+  returnToSelectedRevision();
+  expandedFiles.value = {};
+  inlinePosition.value = null;
+  lineCommentFeedback.value = '';
+  const selectedFile = app.files.value.find(file => fileName(file) === app.selectedPath.value);
+  if (selectedFile && query.value && !fileName(selectedFile).toLowerCase().includes(query.value.toLowerCase())) query.value = '';
+  await nextTick();
+  scheduleReviewSupplementals(false);
 }
 function startPreviewResize() {
   const onMove = (move: PointerEvent) => { previewWidth.value = Math.max(320, Math.min(window.innerWidth * .7, window.innerWidth - move.clientX)); };
@@ -450,8 +494,9 @@ onMounted(() => {
   if (url) void start(url);
   pollTimer = setInterval(() => { if (!document.hidden) void refreshReview(); }, 90_000);
   document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('keydown', onZenKeydown);
 });
-onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); continuousObserver?.disconnect(); document.removeEventListener('visibilitychange', onVisibility); });
+onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); continuousObserver?.disconnect(); clearZenCloseTimer(); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('keydown', onZenKeydown); });
 watch([continuous, displayedFiles], async () => {
   await nextTick();
   continuousObserver?.disconnect();
@@ -467,11 +512,17 @@ watch([continuous, displayedFiles], async () => {
   continuousRoot.value.querySelectorAll<HTMLElement>('[data-continuous-path]').forEach(element => continuousObserver!.observe(element));
 }, { flush: 'post' });
 watch(() => app.selectedPath.value, path => {
+  if (commitInspection.value) return;
   const file = app.files.value.find(row => fileName(row) === path);
   if (!file) return;
   comment.value = app.drafts.value[`comment:${fileName(file)}`] || '';
   inlinePosition.value = null;
   lineCommentFeedback.value = '';
+});
+watch(commitInspection, inspection => {
+  comment.value = inspection
+    ? app.drafts.value['mr:comment'] ?? comment.value
+    : app.drafts.value[`comment:${app.selectedPath.value}`] || '';
 });
 watch(() => {
   const mr = app.review.value?.mr;
@@ -496,19 +547,26 @@ watch(summary, value => { if (summaryOpen.value) app.setDraft('mr:summary', valu
 watch(replyText, value => { if (replyTo.value) app.setDraft(`reply:${replyTo.value}`, value); });
 watch(editText, value => { if (editingNote.value) app.setDraft(`edit:${editingNote.value}`, value); });
 watch(draftNoteText, value => { if (editingDraftNote.value) app.setDraft(`draft-note:${editingDraftNote.value}`, value); });
-watch(displayedFiles, files => { if (files.length && !files.some(file => fileName(file) === app.selectedPath.value)) setFile(files[0]); });
+watch(displayedFiles, files => {
+  if (commitInspection.value) {
+    if (files.length && !files.some(file => fileName(file) === selectedCommitPath.value)) selectedCommitPath.value = fileName(files[0]);
+    return;
+  }
+  if (files.length && !files.some(file => fileName(file) === app.selectedPath.value)) setFile(files[0]);
+});
 </script>
 
 <template>
-  <main class="workspace">
+  <main class="workspace" :class="{ 'zen-mode': zenMode }">
     <Head><Title>MergePeek — GitLab merge request review</Title><Meta v-if="previewOpen && previewUrl" http-equiv="content-security-policy" :content="framePolicy" /></Head>
-    <header class="topbar">
+    <header class="topbar" :inert="zenMode" :aria-hidden="zenMode">
       <a class="brand" href="#" @click.prevent="notice = 'Launch mpeek with a GitLab merge request URL'">Merge<span>Peek</span></a>
       <template v-if="app.review.value">
         <div class="mr-heading"><strong>{{ app.review.value.mr.title }}</strong><span class="review-state">{{ reviewerState.replaceAll('_', ' ') }}</span><button class="quiet" @click="descriptionOpen = !descriptionOpen">{{ descriptionOpen ? 'Hide details' : 'Details' }}</button></div>
         <div class="top-actions">
+          <button class="quiet zen-entry" aria-label="Enter Zen Mode" @click="toggleZenMode">Zen Mode</button>
           <span class="progress-label" :title="`${reviewedCount} of ${app.files.value.length} files reviewed; progress is weighted by returned diff lines, with unavailable diffs counted as one segment`">{{ reviewedCount }}/{{ app.files.value.length }} · {{ progress }}%</span>
-          <button class="quiet" :disabled="app.busy.value" @click="refreshReview(true)">↻ Refresh</button>
+          <button class="quiet topbar-refresh" :disabled="app.busy.value" @click="refreshReview(true)">↻ Refresh</button>
           <button class="quiet" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
           <details ref="actionMenu" class="action-menu">
             <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
@@ -532,6 +590,41 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         </div>
       </template>
     </header>
+    <section v-if="zenMode" id="zen-controls-panel" class="zen-controls-panel" :class="{ 'zen-panel-open': zenPanel === 'controls' }" aria-label="Review controls" :aria-hidden="zenPanel !== 'controls'" :inert="zenPanel !== 'controls'" @pointerenter="onZenPanelPointerEnter('controls', $event)" @pointerleave="onZenPanelPointerLeave('controls', $event)" @focusout="onZenPanelFocusOut('controls', $event)">
+      <header class="zen-controls-heading"><div><strong>{{ commitInspection ? 'Commit inspection' : 'Review controls' }}</strong><span v-if="commitInspection">Push version {{ app.selectedVersionId.value }} remains selected</span><span v-else>{{ app.review.value?.mr.title }}</span></div><button class="icon-button" aria-label="Close Controls panel" @click="closeZenPanel(true)">×</button></header>
+      <div class="zen-control-row">
+        <button class="quiet" aria-label="Refresh merge request" :disabled="app.busy.value" @click="refreshZenReview($event)">↻ Refresh</button>
+        <button class="quiet" :aria-label="previewOpen ? 'Close preview' : 'Open preview'" @click="previewOpen = !previewOpen">{{ previewOpen ? 'Close preview' : 'Preview' }}</button>
+        <details class="action-menu zen-more-actions">
+          <summary class="quiet">More{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</summary>
+          <div class="action-menu-popover">
+            <button class="quiet" @click="closeZenActionMenu($event); showSummary('summary')">Summary</button>
+            <button class="quiet" @click="closeZenActionMenu($event); showSummary('changes')">Request changes</button>
+            <button class="quiet" :disabled="mrActionBusy" @click="closeZenActionMenu($event); mrAction('unapprove')">Unapprove</button>
+            <button class="quiet" :disabled="draftNotesBusy || !draftNoteList.length" @click="closeZenActionMenu($event); publishDraftNotes()">Publish drafts{{ draftNoteList.length ? ` (${draftNoteList.length})` : '' }}</button>
+            <button class="quiet" :disabled="app.ownershipPending.value" @click="closeZenActionMenu($event); app.refreshMemberships()">Refresh memberships</button>
+            <button v-if="app.review.value?.mr.draft" class="quiet" :disabled="mrActionBusy" @click="closeZenActionMenu($event); mrAction('ready')">Mark ready</button>
+          </div>
+        </details>
+        <button class="approve" :disabled="mrActionBusy" @click="mrAction('approve')">Approve</button>
+        <a class="quiet external" :href="app.review.value?.mr.web_url" target="_blank" rel="noreferrer">GitLab ↗</a>
+        <button class="icon-button" aria-label="Toggle light and dark theme" @click="toggleTheme">{{ theme === 'dark' ? '☼' : '◐' }}</button>
+        <button class="quiet" aria-label="Exit Zen Mode" @click="toggleZenMode">Exit Zen Mode</button>
+        <button v-if="commitInspection" class="quiet" @click="selectZenHistoryTab('revisions')">Return to selected revision</button>
+      </div>
+      <div class="zen-control-row zen-review-controls">
+        <span v-if="!commitInspection" class="progress-label">{{ reviewedCount }}/{{ app.files.value.length }} · {{ progress }}%</span>
+        <button class="quiet" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
+        <button class="quiet" aria-label="Next unreviewed file" :disabled="Boolean(commitInspection)" @click="navigate(1)">Next unreviewed →</button>
+        <label class="wrap-toggle"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
+        <div class="segmented-control" role="group" aria-label="Diff layout">
+          <button :aria-pressed="mode === 'split'" @click="mode = 'split'">Split</button>
+          <button :aria-pressed="mode === 'unified'" @click="mode = 'unified'">Unified</button>
+        </div>
+        <label class="wrap-toggle"><input v-model="wrap" type="checkbox"> Wrap lines</label>
+        <label class="wrap-toggle"><input v-model="continuous" type="checkbox"> Continuous files</label>
+      </div>
+    </section>
     <div v-if="app.busy.value && !app.review.value" class="loading-state" role="status" aria-live="polite" aria-busy="true">
       <span class="loading-spinner" aria-hidden="true" />
       <span>Loading merge request…</span>
@@ -541,10 +634,10 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
     <div v-if="app.review.value?.mr.description && descriptionOpen" class="description" v-html="renderMarkdown(app.review.value.mr.description)" />
     <div v-if="app.error.value" class="error-banner" role="alert"><span>{{ app.error.value }}</span><button v-if="!app.review.value && currentMr" class="quiet" :disabled="app.busy.value" @click="start(currentMr)">Retry</button><button @click="app.error.value = ''">Dismiss</button></div>
     <div v-if="notice" class="notice" role="status" @click="notice = ''">{{ notice }} <button aria-label="Dismiss" @click.stop="notice = ''">×</button></div>
-    <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen }" :style="{ '--preview-width': `${previewWidth}px` }">
-      <aside class="file-sidebar">
+    <div v-if="app.review.value" class="review-layout" :class="{ 'preview-visible': previewOpen, 'zen-mode': zenMode }" :style="{ '--preview-width': `${previewWidth}px` }">
+      <aside id="zen-files-panel" class="file-sidebar" :class="{ 'zen-panel-open': zenPanel === 'files' }" :aria-hidden="zenMode && zenPanel !== 'files'" :inert="zenMode && zenPanel !== 'files'" @pointerenter="onZenPanelPointerEnter('files', $event)" @pointerleave="onZenPanelPointerLeave('files', $event)" @focusout="onZenPanelFocusOut('files', $event)">
         <div class="sidebar-tabs" role="tablist" aria-label="Merge request sidebar">
-          <button id="files-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'files'" aria-controls="files-panel" @click="sidebarTab = 'files'">Files <span class="tab-count">{{ app.files.value.length }}</span></button>
+          <button id="files-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'files'" aria-controls="files-panel" @click="sidebarTab = 'files'">Files <span class="tab-count">{{ sourceFiles.length }}</span></button>
           <button id="history-tab" class="sidebar-tab" role="tab" :aria-selected="sidebarTab === 'history'" aria-controls="history-panel" :aria-label="`History${app.unreadVersions.value.length ? `, ${app.unreadVersions.value.length} new pushes` : ''}`" @click="sidebarTab = 'history'"><span>History</span><span v-if="app.unreadVersions.value.length" class="history-count">{{ app.unreadVersions.value.length }}</span></button>
         </div>
         <div v-if="sidebarTab === 'files'" id="files-panel" class="sidebar-panel" role="tabpanel" aria-labelledby="files-tab">
@@ -552,12 +645,12 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
           <label class="filter-toggle"><input v-model="showAll" type="checkbox" :disabled="app.ownershipPending.value"> Show all files</label>
           <div v-if="app.review.value.ownerWarning" class="owner-warning">CODEOWNERS could not be verified. Files stay hidden until an owner is confirmed; use Show all files to include them.</div>
           <div v-else-if="hasUnknownOwner" class="owner-warning">Some CODEOWNERS owners could not be verified. Their files stay hidden until membership is confirmed.</div>
-          <div v-if="!eligibleFiles.length" class="empty-filter">No matching files.</div>
-          <nav class="file-list" aria-label="Changed files">
-            <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === app.selectedPath.value }" @click="setFile(file)">
+          <div v-if="!eligibleFiles.length" class="empty-filter">{{ commitInspection ? 'No files in this commit match the current filters.' : 'No matching files.' }}</div>
+          <nav class="file-list" :aria-label="commitInspection ? 'Files changed by inspected commit' : 'Changed files'">
+            <button v-for="file in eligibleFiles" :key="file.new_path + file.old_path" class="file-row" :class="{ selected: fileName(file) === activePath }" @click="setFile(file)">
               <span class="file-state" :class="file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : ''">{{ file.new_file ? 'A' : file.deleted_file ? 'D' : file.renamed_file ? 'R' : 'M' }}</span>
               <span class="file-path" :title="fileName(file)">{{ tree ? fileName(file).replaceAll('/', ' / ') : fileName(file) }}</span>
-              <span v-if="isReviewed(file)" class="reviewed-mark" aria-label="Reviewed">✓</span>
+              <span v-if="!commitInspection && isReviewed(file)" class="reviewed-mark" aria-label="Reviewed">✓</span>
             </button>
           </nav>
         </div>
@@ -575,16 +668,17 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
       </aside>
       <section class="review-main">
         <div v-if="app.busy.value && !activeFile" class="empty-state">Loading merge request…</div>
+        <div v-else-if="commitInspection && !sourceFiles.length" class="empty-state">GitLab returned no file changes for this commit.</div>
         <template v-else-if="activeFile">
-          <div class="file-toolbar">
+          <div v-if="commitInspection" class="commit-inspection-banner" role="status"><strong>Inspecting {{ commitInspection.commit.short_id || commitInspection.commit.id.slice(0, 8) }}</strong><span>{{ commitInspection.commit.title }} · Push version {{ app.selectedVersionId.value }} remains selected</span><span>Comments are posted at merge request level.</span></div>
+          <div class="file-toolbar" :aria-hidden="zenMode" :inert="zenMode">
             <div class="file-heading">
-              <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
-              <button class="review-toggle" :class="{ reviewed: isReviewed(activeFile) }" :disabled="!activeFile.identity" @click="toggleReviewed">{{ isReviewed(activeFile) ? 'Mark unreviewed' : 'Mark reviewed' }}</button>
+              <div class="path-label"><strong>{{ fileName(activeFile) }}</strong><span v-if="commitInspection" class="commit-inspection-label">Commit inspection · push version {{ app.selectedVersionId.value }} remains selected</span><span v-else-if="activeFile.renamed_file" class="old-path">from {{ activeFile.old_path }}</span></div>
             </div>
             <div class="file-actions">
               <div class="review-actions">
                 <button class="quiet previous-file" aria-label="Previous file" title="Previous file" @click="navigate(-1)">←</button>
-                <button class="quiet" aria-label="Next unreviewed file" @click="navigate(1)">Next unreviewed →</button>
+                <button class="quiet" aria-label="Next unreviewed file" :disabled="Boolean(commitInspection)" @click="navigate(1)">Next unreviewed →</button>
                 <label class="wrap-toggle auto-advance"><input :checked="app.autoAdvance.value" type="checkbox" aria-label="Auto-advance to next unreviewed file" @change="app.setAutoAdvance(($event.target as HTMLInputElement).checked)"> Auto-advance</label>
               </div>
               <div class="view-actions">
@@ -602,21 +696,21 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
               </div>
             </div>
           </div>
-          <div v-if="(activeFile.collapsed || activeFile.too_large) && !expandedFiles[fileName(activeFile)]" class="diff-warning"><strong>{{ activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
-          <div class="diff-scroll">
+          <div v-if="(activeFile.collapsed || activeFile.too_large) && (commitInspection || !expandedFiles[fileName(activeFile)])" class="diff-warning"><strong>{{ commitInspection ? 'GitLab did not return the full commit diff.' : activeFile.too_large ? 'GitLab marked this file as too large.' : 'GitLab collapsed this diff.' }}</strong><span>{{ commitInspection ? 'Full-file expansion and inline comments are unavailable during commit inspection.' : activeFile.too_large ? 'Inline diff is unavailable for this file.' : 'Some context may be missing from the returned patch.' }}</span><button v-if="!commitInspection" class="quiet" :disabled="expandingPath === fileName(activeFile)" @click="expandFile(activeFile)">{{ expandingPath === fileName(activeFile) ? 'Loading…' : 'Load full file' }}</button></div>
+          <div class="diff-scroll" :class="{ 'continuous-scroll': continuous }">
             <div v-if="continuous" ref="continuousRoot" class="continuous-list">
-              <article v-for="file in displayedFiles" :key="file.new_path" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
-                <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">Comment on file</button></header>
-              <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <article v-for="file in displayedFiles" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${file.new_path}`" :data-continuous-path="fileName(file)" :data-path="fileName(file)" class="continuous-file">
+                <header><button class="quiet" @click="setFile(file)">{{ fileName(file) }}</button><button class="quiet" @click="setFile(file)">{{ commitInspection ? 'Select file' : 'Comment on file' }}</button></header>
+                <component :is="PierreDiff" v-if="continuousVisible.has(fileName(file)) && file.diff" :diff="file.diff" :path="fileName(file)" :old-path="file.old_path" :new-file="file.new_file" :deleted-file="file.deleted_file" :mode="mode" :wrap="wrap" :continuous="true" :reviewed="isReviewed(file)" :review-disabled="Boolean(commitInspection) || !file.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(file, false)" />
                 <pre v-else-if="continuousVisible.has(fileName(file))" class="raw-diff">GitLab did not return an inline diff for this file.</pre>
               </article>
             </div>
             <template v-else>
-              <component :is="PierreDiff" v-if="selectedDiff" :key="activeFile.new_path" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="expandedFiles[fileName(activeFile)]" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" />
+              <component :is="PierreDiff" v-if="selectedDiff" :key="`${commitInspection?.commit.id || app.selectedVersionId.value}:${fileName(activeFile)}`" :diff="activeFile.diff" :path="fileName(activeFile)" :old-path="activeFile.old_path" :new-file="activeFile.new_file" :deleted-file="activeFile.deleted_file" :mode="mode" :wrap="wrap" :full-files="commitInspection ? undefined : expandedFiles[fileName(activeFile)]" :reviewed="isReviewed(activeFile)" :review-disabled="Boolean(commitInspection) || !activeFile.identity" @ready="loadReviewSupplementals" @line-selected="selectDiffLine" @line-range="selectDiffRange" @review-toggle="toggleReviewed(activeFile)" />
               <pre v-else class="raw-diff">{{ activeFile.diff || 'GitLab did not return an inline diff for this file.' }}</pre>
             </template>
           </div>
-          <div class="comment-panel">
+          <div id="zen-activity-panel" class="comment-panel" :class="{ 'zen-panel-open': zenPanel === 'activity' }" :aria-hidden="zenMode && zenPanel !== 'activity'" :inert="zenMode && zenPanel !== 'activity'" @pointerenter="onZenPanelPointerEnter('activity', $event)" @pointerleave="onZenPanelPointerLeave('activity', $event)" @focusout="onZenPanelFocusOut('activity', $event)">
             <p v-if="lineCommentStatus" class="history-comment-warning" role="status">{{ lineCommentStatus }}</p>
             <section class="draft-notes" :class="{ 'has-draft-notes': draftNoteList.length > 0 }" aria-label="GitLab draft notes">
               <h3>Your GitLab draft notes <span>{{ draftNoteList.length }}</span></h3>
@@ -646,7 +740,7 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
                 <button class="quiet" @click="app.call('resolve', { discussionId: thread.id, resolved: !thread.resolved }).then(app.refresh)">{{ thread.resolved ? 'Reopen' : 'Resolve' }}</button>
               </details>
             </details>
-            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ inlinePosition ? 'Comment on selected diff line' : 'Add an MR-level comment' }}<button v-if="inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
+            <form class="comment-form" @submit.prevent="sendComment"><label for="review-comment">{{ !commitInspection && inlinePosition ? 'Comment on selected diff line' : 'Add an MR-level comment' }}<button v-if="!commitInspection && inlinePosition" type="button" class="quiet" @click="inlinePosition = null">Clear line</button></label><textarea id="review-comment" v-model="comment" rows="3" placeholder="Write a comment…" :disabled="commentBusy"/><div class="comment-actions"><label class="wrap-toggle"><input v-model="commentDraft" type="checkbox"> Save as draft note</label><button class="approve" :disabled="commentBusy || !comment.trim()">{{ commentBusy ? 'Saving…' : commentDraft ? 'Save draft' : 'Post comment' }}</button></div></form>
           </div>
         </template>
         <div v-else class="empty-state">
@@ -664,6 +758,44 @@ watch(displayedFiles, files => { if (files.length && !files.some(file => fileNam
         <iframe v-else :key="previewKey" class="preview-frame" :src="previewUrl" :sandbox="'allow-scripts allow-forms allow-same-origin'" referrerpolicy="no-referrer" title="Merge request preview" />
         <p v-if="previewUrl" class="frame-note">This site may block embedding. <a :href="previewUrl" target="_blank" rel="noreferrer">Open it in your browser</a>.</p>
       </aside>
+      <aside v-if="zenMode" id="zen-history-panel" class="zen-history-panel" :class="{ 'zen-panel-open': zenPanel === 'history' }" aria-label="Merge request history" :aria-hidden="zenPanel !== 'history'" :inert="zenPanel !== 'history'" @pointerenter="onZenPanelPointerEnter('history', $event)" @pointerleave="onZenPanelPointerLeave('history', $event)" @focusout="onZenPanelFocusOut('history', $event)">
+        <header class="zen-history-heading"><div><strong>History</strong><span v-if="commitInspection">Inspecting commit · push {{ app.selectedVersionId.value }} stays selected</span><span v-else>{{ app.selectedVersionId.value === app.latestVersionId.value ? 'Latest push selected' : `Push ${app.selectedVersionId.value} selected` }}</span></div><button class="icon-button" aria-label="Close History panel" @click="closeZenPanel(true)">×</button></header>
+        <div class="zen-history-tabs" role="tablist" aria-label="History view">
+          <button id="zen-commits-tab" class="zen-history-tab" role="tab" :aria-selected="zenHistoryTab === 'commits'" aria-controls="zen-commits-panel" @click="selectZenHistoryTab('commits')">Commits</button>
+          <button id="zen-revisions-tab" class="zen-history-tab" role="tab" :aria-selected="zenHistoryTab === 'revisions'" aria-controls="zen-revisions-panel" @click="selectZenHistoryTab('revisions')">Revisions<span v-if="app.unreadVersions.value.length" class="history-count">{{ app.unreadVersions.value.length }}</span></button>
+        </div>
+        <section v-if="zenHistoryTab === 'commits'" id="zen-commits-panel" class="zen-history-content" role="tabpanel" aria-labelledby="zen-commits-tab">
+          <div class="zen-history-subhead"><span>Commits currently in this merge request</span><button class="quiet" aria-label="Refresh commits" :disabled="commitsLoading" @click="loadCommits(true)">{{ commitsLoading ? 'Loading…' : '↻ Refresh' }}</button></div>
+          <p v-if="commitsLoading && !commits.length" class="history-empty" role="status">Loading commits from GitLab…</p>
+          <p v-else-if="commitsFailed && !commits.length" class="history-empty" role="alert">GitLab could not load the merge request commits. Refresh to try again.</p>
+          <p v-else-if="commitsLoaded && !commits.length" class="history-empty" role="status">GitLab returned no commits for this merge request.</p>
+          <nav v-else class="history-list" aria-label="Merge request commits">
+            <button v-for="commit in commits" :key="commit.id" class="zen-commit-row" :class="{ selected: commitInspection?.commit.id === commit.id }" :aria-current="commitInspection?.commit.id === commit.id ? 'page' : undefined" :disabled="commitDiffLoading" @click="inspectCommit(commit)">
+              <span class="zen-commit-meta"><strong>{{ commit.short_id || commit.id.slice(0, 8) }}</strong><time v-if="commitTime(commit).datetime" :datetime="commitTime(commit).datetime">{{ commitTime(commit).label }}</time><span v-else>{{ commitTime(commit).label }}</span></span>
+              <span class="zen-commit-title">{{ commit.title }}</span>
+              <span v-if="commit.author_name" class="zen-commit-author">{{ commit.author_name }}</span>
+              <span v-if="commitInspection?.commit.id === commit.id" class="history-selected">Inspecting</span>
+            </button>
+          </nav>
+        </section>
+        <section v-else id="zen-revisions-panel" class="zen-history-content" role="tabpanel" aria-labelledby="zen-revisions-tab">
+          <div class="zen-history-subhead"><span>GitLab push versions · newest first</span><button v-if="app.selectedVersionId.value !== app.latestVersionId.value && app.latestVersionId.value != null" class="quiet" :disabled="app.busy.value" @click="selectZenRevision(app.latestVersionId.value)">Latest push →</button></div>
+          <p v-if="!app.versions.value.length" class="history-empty" role="status">GitLab has not returned any push versions.</p>
+          <nav v-else class="history-list" aria-label="Push revisions">
+            <button v-for="version in app.versions.value" :key="version.id" class="history-row zen-revision-row" :class="{ selected: version.id === app.selectedVersionId.value }" :aria-current="version.id === app.selectedVersionId.value ? 'page' : undefined" :disabled="app.busy.value" @click="selectZenRevision(version.id)">
+              <span class="history-row-main"><strong class="history-sha">{{ shortSha(version) }}</strong><time :datetime="version.created_at">{{ pushTime(version) }}</time></span>
+              <span class="history-row-state"><span v-if="isUnreadVersion(version)" class="history-new">New</span><span class="history-review" :class="`state-${app.versionReviewStatus(version.id)}`">{{ versionStatus(version) }}</span></span>
+              <span v-if="version.id === app.selectedVersionId.value" class="history-selected">Selected</span>
+            </button>
+          </nav>
+        </section>
+      </aside>
+    </div>
+    <div v-if="zenMode" class="zen-edges" aria-label="Zen panels">
+      <button id="zen-edge-files" class="zen-edge zen-edge-files" type="button" aria-label="Files panel" aria-controls="zen-files-panel" :aria-expanded="zenPanel === 'files'" title="Files" @pointerenter="onZenHandlePointerEnter('files', $event)" @pointerleave="onZenHandlePointerLeave('files', $event)" @click="toggleZenPanel('files', $event)" />
+      <button id="zen-edge-controls" class="zen-edge zen-edge-controls" type="button" aria-label="Controls panel" aria-controls="zen-controls-panel" :aria-expanded="zenPanel === 'controls'" title="Controls" @pointerenter="onZenHandlePointerEnter('controls', $event)" @pointerleave="onZenHandlePointerLeave('controls', $event)" @click="toggleZenPanel('controls', $event)" />
+      <button id="zen-edge-history" class="zen-edge zen-edge-history" type="button" aria-label="History panel" aria-controls="zen-history-panel" :aria-expanded="zenPanel === 'history'" title="History" @pointerenter="onZenHandlePointerEnter('history', $event)" @pointerleave="onZenHandlePointerLeave('history', $event)" @click="toggleZenPanel('history', $event)" />
+      <button id="zen-edge-activity" class="zen-edge zen-edge-activity" type="button" aria-label="Activity and comments panel" aria-controls="zen-activity-panel" :aria-expanded="zenPanel === 'activity'" title="Activity & Comments" @pointerenter="onZenHandlePointerEnter('activity', $event)" @pointerleave="onZenHandlePointerLeave('activity', $event)" @click="toggleZenPanel('activity', $event)" />
     </div>
     <div v-if="summaryOpen" class="modal-backdrop" @click.self="summaryOpen = false"><form class="modal" @submit.prevent="sendSummary"><h2>{{ summaryIntent === 'changes' ? 'Request changes' : 'Post a review summary' }}</h2><textarea v-model="summary" rows="7" :placeholder="summaryIntent === 'changes' ? 'Explain the changes you are requesting…' : 'Share an overall review note…'"/><div class="modal-actions"><button type="button" class="quiet" @click="summaryOpen = false">Cancel</button><button class="approve">{{ summaryIntent === 'changes' ? 'Post change request' : 'Post summary' }}</button></div></form></div>
   </main>

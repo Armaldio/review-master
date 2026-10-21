@@ -121,9 +121,6 @@ export async function getGitLabContext(event: H3Event, value: string) {
   const mr = parseMergeRequestUrl(value);
   const requestHost = getRequestHeader(event, 'host');
   const requestOrigin = getRequestHeader(event, 'origin');
-  const requestHostname = requestHost?.split(':')[0]?.toLowerCase();
-  const allowedHosts = new Set(['127.0.0.1', 'localhost', ...(process.env.REVIEW_MASTER_ALLOWED_HOSTS || '').split(',').map(host => host.trim().toLowerCase()).filter(Boolean)]);
-  if (!requestHostname || !allowedHosts.has(requestHostname)) throw createError({ statusCode: 403, statusMessage: 'Request host is not trusted' });
   if (requestOrigin && new URL(requestOrigin).host !== requestHost) throw createError({ statusCode: 403, statusMessage: 'Cross-origin request rejected' });
   let legacyAccount: Account | undefined;
   try { legacyAccount = (await getAccounts()).find(item => item.host === mr.host); }

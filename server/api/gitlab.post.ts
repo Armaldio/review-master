@@ -8,6 +8,7 @@ type Mr = { id: number; title: string; description: string; state: string; web_u
 type Diff = { old_path: string; new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean; collapsed?: boolean; too_large?: boolean; a_mode?: string; b_mode?: string };
 type DiffVersion = { id: number; created_at: string; head_commit_sha: string; base_commit_sha: string; start_commit_sha: string; state?: string; real_size?: string };
 type VersionDiff = DiffVersion & { diffs?: Diff[] };
+type MrCommit = { id: string; short_id?: string; title: string; author_name?: string; committed_date?: string; authored_date?: string; web_url?: string };
 type CompareResult = { diffs?: Diff[]; compare_timeout?: boolean; compare_same_ref?: boolean };
 const json = (value: unknown) => JSON.stringify(value);
 const ownerMembershipRequests = new Map<string, Promise<{ accessLevel: number; checkedAt: string } | null>>();
@@ -124,6 +125,17 @@ export default defineEventHandler(async event => {
         commentRefs: selected.commentRefs,
         commentableLines: selected.commentableLines,
       };
+    }
+    case 'mr-commits':
+      return gitlabPages<MrCommit>(`${base}/commits`, token);
+    case 'commit-diff': {
+      const sha = body.payload?.sha;
+      if (typeof sha !== 'string' || !/^[a-f\d]{40}$/i.test(sha)) {
+        throw createError({ statusCode: 400, statusMessage: 'A valid full commit SHA is required.' });
+      }
+      const diffs = await gitlab<Diff[]>(`${project}/repository/commits/${encodeURIComponent(sha)}/diff`, token);
+      if (!Array.isArray(diffs)) throw createError({ statusCode: 502, statusMessage: 'GitLab returned an invalid commit diff. Try again.' });
+      return { commitId: sha, diffs: diffs.map(file => ({ ...file, identity: null })) };
     }
     case 'file-identities': {
       const paths = Array.isArray(body.payload?.paths)
