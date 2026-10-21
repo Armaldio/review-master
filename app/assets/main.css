@@ -25,6 +25,7 @@
 .review-toggle{min-height:32px;padding:7px 12px;border:1px solid transparent;border-radius:5px;color:var(--review-action-ink);background:var(--good);font-size:12px;font-weight:600;white-space:nowrap}
 .review-toggle:hover{filter:brightness(.96)}
 .review-toggle.reviewed{color:var(--muted);background:var(--paper);border-color:var(--line)}
+.pierre-review-toggle{min-height:28px;margin-inline-start:8px;padding:4px 8px;font-size:11px}
 .auto-advance{padding:4px 7px;border:1px solid var(--line);border-radius:5px;cursor:pointer}
 .view-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding-top:6px;border-top:1px solid var(--line)}
 .segmented-control{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:6px;background:var(--paper)}
@@ -34,7 +35,7 @@
 .display-popover{min-width:170px;gap:8px;padding:10px}
 .display-popover .wrap-toggle{cursor:pointer}
 @media(max-width:1000px){.top-actions{gap:3px}.progress-label{display:inline-flex}}
-@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-heading .review-toggle{flex:none;min-width:0}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
+@media(max-width:680px){.progress-label{display:none}.file-toolbar{padding:8px}.file-heading{width:100%}.file-actions{width:100%}.review-actions{gap:3px}.auto-advance{margin-left:auto}.view-actions{justify-content:space-between;width:100%}.action-menu-popover{position:fixed;top:56px;right:8px}}
 @media(prefers-color-scheme:dark){:root{--review-action-ink:#102d27}}
 
 /* Keep the file controls beside the path so they leave more room for the diff. */

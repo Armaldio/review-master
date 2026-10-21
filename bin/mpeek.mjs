@@ -9,7 +9,7 @@ import open from 'open';
 const dataDir = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'review-master');
 const accountsFile = join(dataDir, 'accounts.json');
 const args = process.argv.slice(2);
-const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>\nLocal server binds to 127.0.0.1:4173 by default; override with REVIEW_MASTER_HOST and REVIEW_MASTER_PORT. Non-local hosts must be listed in REVIEW_MASTER_ALLOWED_HOSTS.`);
+const usage = () => console.log(`mpeek <gitlab-mr-url>\nmpeek account add <https://gitlab.example.com>\nmpeek account list\nmpeek account remove <host>\nLocal server binds to 127.0.0.1:4173 by default; override with REVIEW_MASTER_HOST and REVIEW_MASTER_PORT.`);
 const readSecret = () => new Promise((resolve, reject) => {
   if (!process.stdin.isTTY) return reject(new Error('Account setup requires an interactive terminal'));
   process.stdout.write('Personal access token: ');
